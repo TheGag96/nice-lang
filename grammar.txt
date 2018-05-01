@@ -1,0 +1,49 @@
+Grammar
+============
+
+prgm           -> outer_stmt_seq
+outer_stmt_seq -> {outer_stmt}+
+outer_stmt     -> inner_stmt | func | define
+inner_stmt_seq -> {inner_stmt}
+inner_stmt     -> assign_or_call | if | while | for | return
+if             -> "if" exp "then" inner_stmt_seq {"elif" exp "then" inner_stmt_seq} ["else" inner_stmt_seq] "endif"
+while          -> "while" exp "do" inner_stmt_seq "endwhile"
+for            -> "for" IDENT "in" (INT "to" INT | IDENT) "do" inner_stmt_seq "endfor"
+return         -> "return" exp ";"
+func           -> "func" IDENT "(" [IDENT ":" IDENT {"," IDENT ":" IDENT}] ")" [":" IDENT] "as" inner_stmt_seq "endfunc"
+define         -> "define" IDENT "as" "(" IDENT {"," IDENT} ")" ";"
+assign_or_call -> value (assign | call) ";"
+assign         -> ":=" exp
+value          -> IDENT {"." IDENT | "[" exp "]" | call}
+call           -> "(" [exp {"," exp}] ")"
+exp            -> exp_2 {op_1 exp_2}
+exp_2          -> exp_3 {op_2 exp_3}
+exp_3          -> exp_4 {op_3 exp_4}
+exp_4          -> exp_5 {op_4 exp_5}
+exp_5          -> exp_6 {op_5 exp_6}
+exp_6          -> exp_7 {op_6 exp_7}
+exp_7          -> [op_u] exp_8
+exp_8          -> "(" exp ")" | value | literal
+literal        -> INT | HEX | FLOAT | STRING | CHAR | BOOL | NULL
+op_1           -> "or"
+op_2           -> "and"
+op_3           -> "not"
+op_4           -> "=" | "!=" | ">" | "<" | ">=" | "<="
+op_5           -> "+" | "-" | "|"
+op_6           -> "*" | "/" | "div" | "mod" | "&" | "^"
+op_u           -> "+" | "-" | "~"
+
+
+Regex
+============
+
+INT     -> (+|\-)?[0-9]+
+HEX     -> 0x[0-9A-Fa-f]+
+FLOAT   -> (+|\-)?[0-9]+\.[0-9]+
+STRING  -> \".*\"        //"
+CHAR    -> \'.*\'
+BOOL    -> true | false
+NULL    -> null
+IDENT   -> [a-zA-Z][a-zA-Z0-9_]*
+COMMENT -> \/\/.*\n|\/\*.*\*\/
+
