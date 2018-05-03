@@ -7,17 +7,58 @@ unittest {
     endif
   ";
 
-  import std.stdio;
-  assert(tokenize(code) == ["\n1", "if", "x", "=", "3", "then", "\n1", "print", "(", "x", ")", ";", "\n1", "endif"]);
+  assert(tokenize(code).map!(x => x.str).equal(
+    ["if", "x", "=", "3", "then", "print", "(", "x", ")", ";", "endif"]
+  ));
 }
 
-auto tokenize(string s) @safe {
-  auto app = appender!(string[]);
+struct Token {
+  enum Type {
+    EOF = 0,
+    IDENT, INT, FLOAT, STRING, CHAR, BOOL, NULL,
+    KEYWORD, OP
+    //IF, THEN, ELSEIF, ENDIF,
+    //WHILE, ENDWHILE, FOR, IN, DO, ENDFOR
+    //FUNC, DEFINE, AS, ENDFUNC,
+    //LPAREN, RPARENT, DOT, SEMI, ASSIGN,
+    //RETURN,
+    //OR, AND, NOT,
+    //DIV, MOD,
+    //TRUE, FALSE, NULL,
+    //PLUS, MINUS, TIMES, DIVIDE, BIT_OR, BIT_AND, BIT_NOT, BIT_XOR, 
+    //COLON, COMMA, 
+    //EQUAL, NOT_EQUAL, GREATER, LESS, GREATER_EQUAL, LESS_EQUAL,
+  }
+
+  string str;
+  alias str this;
+  Type type;
+  int lineNum;
+}
+
+struct TokenRange {
+  Token[] tokens;
+  alias tokens this;
+  
+  Token front() @safe {
+    if (tokens.empty) return Token("", Token.Type.EOF, -1);
+    return tokens.front;
+  }
+
+  void popFront() @safe {
+    if (tokens.length) tokens.popFront;
+  }
+
+  bool empty() { return tokens.length == 0; }
+}
+
+TokenRange tokenize(string s) @safe {
+  auto app = appender!(Token[]);
 
   static immutable funcsAlpha = [&matchIdent, &matchKeyword];
   static immutable funcsOther = [&matchInt, &matchFloat, &matchString, &matchChar, &matchOperator];
 
-  string[] matches;
+  Token[] matches;
   matches.reserve(funcsOther.length);
   int lineNum = 1;
 
@@ -35,7 +76,6 @@ auto tokenize(string s) @safe {
         if (!s.length) break outer;
 
         if (white[1]) {
-          app.put("\n" ~ white[1].to!string);
           lineNum += white[1];
         }
       }
@@ -47,7 +87,6 @@ auto tokenize(string s) @safe {
         if (!s.length) break outer;
         
         if (com[1]) {
-          app.put("\n" ~ com[1].to!string);
           lineNum += com[1];
         }
       }
@@ -60,7 +99,7 @@ auto tokenize(string s) @safe {
       matches ~= f(s);
     }
 
-    string longest = matches.fold!((a,b) => a.length > b.length ? a : b);
+    Token longest = matches.fold!((a,b) => a.length > b.length ? a : b);
     if (!longest.length) {
       string errorPortion;
       auto newLineIdx = s.countUntil("\n");
@@ -70,84 +109,87 @@ auto tokenize(string s) @safe {
       throw new Exception("Lexing error on line " ~ lineNum.to!string ~ ": " ~ errorPortion);
     }
 
+    longest.lineNum = lineNum;
     app.put(longest);
     s = s[longest.length..$];
   }
 
-  return app.data;
+  return TokenRange(app.data);
 }
 
-string matchIdent(string s) @safe {
+Token matchIdent(string s) @safe {
   int state = 0;
 
   foreach (i, c; s) {
     if (state == 0) {
-      if (!c.isAlpha) return s[0..i];
+      if (!c.isAlpha) return Token(s[0..i], Token.Type.IDENT, 0);
       state = 1;
     }
     else { //state == 1
-      if (!c.isAlphaNum) return s[0..i];
+      if (!c.isAlphaNum) return Token(s[0..i], Token.Type.IDENT, 0);
     }
   }
 
-  return s;
+  return Token(s, Token.Type.IDENT, 0);
 }
 
-string matchInt(string s) @safe {
+Token matchInt(string s) @safe {
   bool atLeastOneNum = false;
-  if (!s.length) return "";
+  if (!s.length) return Token("", Token.Type.INT, 0);
 
   if (s[0].isDigit) atLeastOneNum = true;
-  else if (s[0] != '+' && s[0] != '-') return "";
+  else if (s[0] != '+' && s[0] != '-') return Token("", Token.Type.INT, 0);
 
   foreach (i, c; s[1-atLeastOneNum..$]) {
     if (!c.isDigit) {
-      if (atLeastOneNum) return s[0..i];
-      else return "";
+      if (atLeastOneNum) return Token(s[0..i], Token.Type.INT, 0);
+      else return Token("", Token.Type.INT, 0);
     }
   }
 
-  if (atLeastOneNum) return s;
-  else return "";
+  if (atLeastOneNum) return Token(s, Token.Type.INT, 0);
+  else return Token("", Token.Type.INT, 0);
 }
 
-string matchFloat(string s) @safe {
-  string intPart = matchInt(s);
-  if (!intPart.length) return "";
+Token matchFloat(string s) @safe {
+  string intPart = matchInt(s).str;
+  if (!intPart.length) return Token("", Token.Type.FLOAT, 0);
 
-  if (s.length - intPart.length < 2 || s[intPart.length] != '.' || !s[intPart.length+1].isDigit) return "";
+  if (s.length - intPart.length < 2 || s[intPart.length] != '.' || !s[intPart.length+1].isDigit) {
+    return Token("", Token.Type.FLOAT, 0);
+  }
 
   foreach (i, c; s[intPart.length+2..$]) {
-    if (!c.isDigit) return s[0..i];
+    if (!c.isDigit) return Token(s[0..i], Token.Type.FLOAT, 0);
   }
 
-  return s;
+  return Token(s, Token.Type.FLOAT, 0);
 }
 
-string matchString(string s) @safe {
-  if (s.length < 2 || s[0] != '"') return "";
+Token matchString(string s) @safe {
+  if (s.length < 2 || s[0] != '"') return Token("", Token.Type.STRING, 0);
 
   foreach (i, c; s[1..$]) {
-    if (c == '"') return s[0..i+1];
-    else if (c == '\n') return "";
+    if (c == '"') return Token(s[0..i+1], Token.Type.STRING);
+    else if (c == '\n') return Token("", Token.Type.STRING, 0);
   }
 
-  return "";
+  return Token("", Token.Type.STRING, 0);
 }
 
-string matchChar(string s) @safe {
-  if (s.length < 3 || s[0] != '\'') return "";
+Token matchChar(string s) @safe {
+  if (s.length < 3 || s[0] != '\'') return Token("", Token.Type.CHAR, 0);
 
   if (s.length >= 4 && s[1] == '\\' && s[3] == '\'') {
-    if (s[2] == '\n') return "";
-    else              return s[0..4];
+    if (s[2] == '\n') return Token("", Token.Type.CHAR, 0);
+    else              return Token(s[0..4], Token.Type.CHAR, 0);
   }
   else if (s[2] == '\'') {
-    if (s[1] == '\n' || s[1] == '\'') return "";
-    else              return s[0..3];  
+    if (s[1] == '\n' || s[1] == '\'') return Token("", Token.Type.CHAR, 0);
+    else              return Token(s[0..3], Token.Type.CHAR, 0);  
   }
 
-  return "";
+  return Token("", Token.Type.CHAR, 0);
 }
 
 Tuple!(string, int) matchOneLineComment(string s) @safe {
@@ -179,7 +221,7 @@ Tuple!(string, int) matchComment(string s) @safe {
   else return oneLine;
 }
 
-string matchKeyword(string s) @safe {
+Token matchKeyword(string s) @safe {
   static immutable string[] keywords = [
     "if", "then", "else", "elif", "endif",
     "while", "do", "endwhile",
@@ -192,13 +234,13 @@ string matchKeyword(string s) @safe {
   ].sort!"a.length > b.length".array;
 
   foreach (word; keywords) {
-    if (s.startsWith(word)) return s[0..word.length];
+    if (s.startsWith(word)) return Token(s[0..word.length], Token.Type.KEYWORD, 0);
   }
 
-  return "";
+  return Token("", Token.Type.KEYWORD, 0);
 }
 
-string matchOperator(string s) @safe {
+Token matchOperator(string s) @safe {
   static immutable string[] ops = [
     "(", ")", ":=", ";",
     "+", "-", "*", "/", "|", "&", "^", "~",
@@ -207,10 +249,10 @@ string matchOperator(string s) @safe {
   ].sort!"a.length > b.length".array;
 
   foreach (op; ops) {
-    if (s.startsWith(op)) return s[0..op.length];
+    if (s.startsWith(op)) return Token(s[0..op.length], Token.Type.OP, 0);
   }
 
-  return "";  
+  return Token("", Token.Type.OP, 0);  
 }
 
 Tuple!(string, int) matchWhitespace(string s) @safe {

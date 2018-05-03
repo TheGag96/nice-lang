@@ -13,7 +13,7 @@ void main() @safe {
     write(">");
     auto line = (() @trusted => readln.strip)();
 
-    string[] tokens; 
+    TokenRange tokens; 
     try {
       tokens = tokenize(line);
     }
@@ -43,25 +43,8 @@ void main() @safe {
 // Some helper functions //
 ///////////////////////////
 
-int lineNum = 1;
-
-string get(string[] tokens) @safe {
-  while (tokens.length && tokens.front[0] == '\n') {
-    lineNum += tokens.front[1..$].to!int;
-    tokens.popFront;
-  }
-
-  if (tokens.empty) return "";
-
-  return tokens.front;
-}
-
-void next(ref string[] tokens) @safe {
-  if (tokens.length) tokens.popFront;
-}
-
-void parseError(string msg) @safe {
-  throw new Exception(format("Parsing error on line %d: %s", lineNum, msg));
+void parseError(string msg, int line) @safe {
+  throw new Exception(format("Parsing error on line %d: %s", line, msg));
 }
 
 void runtimeError(string msg, int line) @safe {
@@ -80,11 +63,11 @@ void runtimeError(string msg, int line) @safe {
 //  return result;
 //}
 
-//Tuple!(Program, string[]) parseProgram(string[] tokens) {
+//Tuple!(Program, TokenRange) parseProgram(TokenRange tokens) {
 //  return parseOuterStmtSeq(tokens);
 //}
 
-//Tuple!(Statement[], string[]) parseOuterStmtSeq(string[] tokens) {
+//Tuple!(Statement[], TokenRange) parseOuterStmtSeq(TokenRange tokens) {
 //  Statement[] stmts;
 
 //  auto stmt = parseStatement(tokens);
@@ -99,48 +82,50 @@ void runtimeError(string msg, int line) @safe {
 //  return tuple(stmts, tokens);  
 //}
 
-Tuple!(AssignStatement, string[]) parseAssignmentStmt(string[] tokens) @safe {
+Tuple!(AssignStatement, TokenRange) parseAssignmentStmt(TokenRange tokens) @safe {
   auto val = parseValue(tokens);
   if (!val[0]) return tuple(cast(AssignStatement)null, tokens);
+  int lineNum = tokens.front.lineNum;
   tokens = val[1];
 
-  if (tokens.get != ":=") return tuple(cast(AssignStatement)null, tokens);
-  //if (tokens.get != ":=") parseError("Expected ':=' for assignment statement");
-  tokens.next;
+  if (tokens.front != ":=") return tuple(cast(AssignStatement)null, tokens);
+  //if (tokens.front != ":=") parseError("Expected ':=' for assignment statement");
+  tokens.popFront;
 
   auto exp = parseExpression(tokens);
-  if (!exp[0]) parseError("Expected expression for assignment statement");
+  if (!exp[0]) parseError("Expected expression for assignment statement", tokens.front.lineNum);
   tokens = exp[1];
 
-  if (tokens.get != ";") parseError("Expected ';' to end assignment statement");
-  tokens.next;
+  if (tokens.front != ";") parseError("Expected ';' to end assignment statement", tokens.front.lineNum);
+  tokens.popFront;
 
   return tuple(new AssignStatement(val[0], exp[0], lineNum), tokens);
 }
 
-Tuple!(Value, string[]) parseValue(string[] tokens) @safe {
+Tuple!(Value, TokenRange) parseValue(TokenRange tokens) @safe {
   Value result;
-  auto tok = tokens.get;
-  if (tok.matchIdent.length) {
-    result = new Value(tok, lineNum);
-    tokens.next;
+  auto tok = tokens.front;
+  if (tok.type == Token.Type.IDENT) {
+    result = new Value(tok, tok.lineNum);
+    tokens.popFront;
   }
   return tuple(result, tokens);
 }
 
-Tuple!(T, string[]) parseBinary(T, U, string[] ops, alias nextFunc)(string[] tokens) @safe {
+Tuple!(T, TokenRange) parseBinary(T, U, string[] ops, alias nextFunc)(TokenRange tokens) @safe {
   auto expNext = nextFunc(tokens);
   if (!expNext[0]) return tuple(cast(T)null, tokens);
+  int lineNum = tokens.front.lineNum;
   tokens = expNext[1];
 
   Tuple!(string, U)[] extra;
 
-  while (ops.canFind(tokens.get)) {
-    string op = tokens.get;
-    tokens.next;
+  while (ops.canFind(tokens.front)) {
+    string op = tokens.front;
+    tokens.popFront;
 
     auto extraExp = nextFunc(tokens);
-    if (!extraExp[0]) parseError("Invalid binary expression " ~ T.stringof ~ " after " ~ op);
+    if (!extraExp[0]) parseError("Invalid binary expression " ~ T.stringof ~ " after " ~ op, lineNum);
     tokens = extraExp[1];
 
     extra ~= tuple(op, extraExp[0]);
@@ -150,15 +135,16 @@ Tuple!(T, string[]) parseBinary(T, U, string[] ops, alias nextFunc)(string[] tok
 }
 
 
-Tuple!(T, string[]) parseUnary(T, string[] ops, alias nextFunc)(string[] tokens) @safe {
+Tuple!(T, TokenRange) parseUnary(T, string[] ops, alias nextFunc)(TokenRange tokens) @safe {
   string op = "";
-  if (ops.canFind(tokens.get)) {
-    op = tokens.get;
-    tokens.next;
+  int lineNum = tokens.front.lineNum;
+  if (ops.canFind(tokens.front)) {
+    op = tokens.front;
+    tokens.popFront;
   }
 
   auto expNext = nextFunc(tokens);
-  if (!expNext[0]) parseError("Invalid unary expression " ~ T.stringof ~ " after " ~ op);
+  if (!expNext[0]) parseError("Invalid unary expression " ~ T.stringof ~ " after " ~ op, lineNum);
   tokens = expNext[1];
 
   return tuple(new T(op, expNext[0], lineNum), tokens);
@@ -171,22 +157,23 @@ alias parseExpression5 = parseBinary!(Expression5, Expression6, ["+", "-", "|"],
 alias parseExpression6 = parseBinary!(Expression6, Expression7, ["*", "/", "div", "mod", "&", "^"], parseExpression7);
 alias parseExpression7 = parseUnary!(Expression7, ["-", "~"], parseExpression8);
 
-Tuple!(Expression4, string[]) parseExpression4(string[] tokens) @safe {
+Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) @safe {
   static immutable ops = ["=", "!=", ">", "<", ">=", "<="];
 
   auto expNext = parseExpression5(tokens);
   if (!expNext[0]) return tuple(cast(Expression4)null, tokens);
+  int lineNum = tokens.front.lineNum;
   tokens = expNext[1];
 
   Tuple!(string, Expression5) extra;
 
   //you can only have at most 1 comparison operation here. no more
-  if (ops.canFind(tokens.get)) {
-    string op = tokens.get;
-    tokens.next;
+  if (ops.canFind(tokens.front)) {
+    string op = tokens.front;
+    tokens.popFront;
 
     auto extraExp = parseExpression5(tokens);
-    if (!extraExp[0]) parseError("Invalid binary expression Expression4 after " ~ op);
+    if (!extraExp[0]) parseError("Invalid binary expression Expression4 after " ~ op, lineNum);
     tokens = extraExp[1];
 
     extra = tuple(op, extraExp[0]);
@@ -195,19 +182,20 @@ Tuple!(Expression4, string[]) parseExpression4(string[] tokens) @safe {
   return tuple(new Expression4(expNext[0], extra, lineNum), tokens);
 }
 
-Tuple!(Expression8, string[]) parseExpression8(string[] tokens) @safe {
+Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) @safe {
   int literal; 
   Value val;
   Expression sub;
+  int lineNum = tokens.front.lineNum;
   
-  if (tokens.get == "(") {
-    tokens.next;
+  if (tokens.front == "(") {
+    tokens.popFront;
     auto loopAround = parseExpression(tokens);
-    if (!loopAround[0]) parseError("Invalid expression after (");
+    if (!loopAround[0]) parseError("Invalid expression after (", tokens.front.lineNum);
     sub = loopAround[0];
     tokens = loopAround[1];
-    if (tokens.get != ")") parseError("Expected ending ) after expression");
-    tokens.next;
+    if (tokens.front != ")") parseError("Expected ending ) after expression", tokens.front.lineNum);
+    tokens.popFront;
 
     return tuple(new Expression8(literal, val, sub, lineNum), tokens);
   }
@@ -226,14 +214,14 @@ Tuple!(Expression8, string[]) parseExpression8(string[] tokens) @safe {
     return tuple(new Expression8(literal, val, sub, lineNum), tokens);
   }
 
-  parseError("Expected literal, value, or parenthesized expression");
+  parseError("Expected literal, value, or parenthesized expression", lineNum);
   return tuple(cast(Expression8)null, tokens);
 }
 
-Tuple!(int, string[]) parseLiteral(string[] tokens) @safe {
-  if (tokens.get.length != 0 && tokens.get.matchInt.length == tokens.get.length) {
-    auto result = tokens.get.to!int;
-    tokens.next;
+Tuple!(int, TokenRange) parseLiteral(TokenRange tokens) @safe {
+  if (tokens.front.type == Token.Type.INT) {
+    auto result = tokens.front.to!int;
+    tokens.popFront;
 
     return tuple(result, tokens);
   }
@@ -267,7 +255,7 @@ class Context {
 }
 
 class TreeNode {
-  public int line;
+  public int lineNum;
 }
 
 class Program : TreeNode {
@@ -285,6 +273,7 @@ class AssignStatement : Statement {
   this(Value val, Expression exp, int ln) @safe {
     lhs = val;
     rhs = exp;
+    lineNum = ln;
   }
 
   void interpret(Context context) @safe {
@@ -338,6 +327,7 @@ class Expression : TreeNode {
   this(Expression2 s, Tuple!(string, Expression2)[] e, int ln) @safe {
     sub = s;
     extra = e;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
@@ -368,6 +358,7 @@ class Expression2 : TreeNode {
   this(Expression3 s, Tuple!(string, Expression3)[] e, int ln) @safe {
     sub = s;
     extra = e;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
@@ -393,6 +384,7 @@ class Expression3 : TreeNode {
   this(string o, Expression4 s, int ln) @safe {
     op = o;
     sub = s;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
@@ -412,6 +404,7 @@ class Expression4 : TreeNode {
   this(Expression5 s, Tuple!(string, Expression5) e, int ln) @safe {
     sub = s;
     extra = e;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
@@ -459,6 +452,7 @@ class Expression5 : TreeNode {
   this(Expression6 s, Tuple!(string, Expression6)[] e, int ln) @safe {
     sub = s;
     extra = e;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
@@ -493,6 +487,7 @@ class Expression6 : TreeNode {
   this(Expression7 s, Tuple!(string, Expression7)[] e, int ln) @safe {
     sub = s;
     extra = e;
+    lineNum = ln;
   }
   
   int interpret(Context context) @safe {
@@ -536,6 +531,7 @@ class Expression7 : TreeNode {
   this(string o, Expression8 s, int ln) @safe {
     op = o;
     sub = s;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
@@ -559,6 +555,7 @@ class Expression8 : TreeNode {
     literal = l;
     val = v;
     sub = s;
+    lineNum = ln;
   }
 
   int interpret(Context context) @safe {
