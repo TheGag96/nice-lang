@@ -1,6 +1,31 @@
 import lexer, std.algorithm, std.typecons, std.string, std.range, std.conv;
 
-void main() @safe {
+@safe:
+
+int main(string[] args) {
+  import std.stdio, std.file;
+
+  if (args.length != 2) {
+    writeln("Usage: parser <program file>");
+    return 1;
+  }
+
+  auto programText = readText(args[1]);
+
+  try {
+    auto program = parse(programText);
+    Context context = new Context;
+    program.interpret(context);
+    writeln("y is ", context.getVar("y"));
+  }
+  catch (Exception e) {
+    writeln(e.msg);
+  }
+
+  return 0;
+}
+
+void repl() {
   import std.stdio;
 
   writeln("Type in some integer math expressions.");
@@ -43,11 +68,11 @@ void main() @safe {
 // Some helper functions //
 ///////////////////////////
 
-void parseError(string msg, int line) @safe {
+void parseError(string msg, int line) {
   throw new Exception(format("Parsing error on line %d: %s", line, msg));
 }
 
-void runtimeError(string msg, int line) @safe {
+void runtimeError(string msg, int line) {
   throw new Exception(format("Runtime error on line %d: %s", line, msg));
 }
 
@@ -55,40 +80,175 @@ void runtimeError(string msg, int line) @safe {
 // Recurisve descent parsing functions //
 /////////////////////////////////////////
 
-//Program parse(string s) {
-//  auto tokens = tokenize(s);
+Program parse(string s) {
+  auto tokens = tokenize(s);
 
-//  auto result = parseProgram(s)[0];
-//  if (!result) parseError("bleh");
-//  return result;
-//}
+  auto result = parseProgram(tokens);
+  if (!result[0]) parseError("Failed to parse the program!", tokens.front.lineNum);
+  tokens = result[1];
 
-//Tuple!(Program, TokenRange) parseProgram(TokenRange tokens) {
-//  return parseOuterStmtSeq(tokens);
-//}
+  if (tokens.length) {
+    parseError("Unexpected text after the program seemingly ended", tokens.front.lineNum);
+  }
 
-//Tuple!(Statement[], TokenRange) parseOuterStmtSeq(TokenRange tokens) {
-//  Statement[] stmts;
+  return result[0];
+}
 
-//  auto stmt = parseStatement(tokens);
-//  if (!stmt[0]) return tuple(null, tokens);
+Tuple!(Program, TokenRange) parseProgram(TokenRange tokens) {
+  auto result = parseOuterStmtSeq(tokens);
+  int lineNum = tokens.front.lineNum;
+  tokens = result[1];
 
-//  while (stmt[0]) {
-//    stmts ~= stmt[0];
-//    tokens = stmt[1];
-//    stmt   = parseStatement(tokens);    
-//  }
+  return tuple(new Program(result[0], lineNum), tokens);
+}
 
-//  return tuple(stmts, tokens);  
-//}
+Tuple!(StmtSeq, TokenRange) parseOuterStmtSeq(TokenRange tokens) {
+  Statement[] stmts;
 
-Tuple!(AssignStatement, TokenRange) parseAssignmentStmt(TokenRange tokens) @safe {
+  int lineNum = tokens.front.lineNum;
+
+  auto stmt = parseStatement(tokens);
+  if (!stmt[0]) parseError("Expected statement", tokens.front.lineNum);
+  tokens = stmt[1];
+  stmts ~= stmt[0];
+
+  while (!tokens.empty) {
+    stmt   = parseStatement(tokens);    
+    tokens = stmt[1];
+    stmts ~= stmt[0];
+  }
+
+  return tuple(new StmtSeq(stmts, lineNum), tokens);  
+}
+
+bool[string] innerStmtFollowSet = null;
+bool[Statement.Type] innerStmtDisallowedSet = null;
+
+Tuple!(StmtSeq, TokenRange) parseInnerStmtSeq(TokenRange tokens) {
+  //dangit D, let me use immutable AAs
+  if (!innerStmtFollowSet.length) {
+    innerStmtFollowSet     = ["elif": true, "else": true, "endif" : true, "endwhile" : true, "endfor" : true, "endfunc" : true];
+    innerStmtDisallowedSet = [Statement.Type.FUNC : true, Statement.Type.DEFINE : true];
+  }
+
+  Statement[] stmts;
+
+  int lineNum = tokens.front.lineNum;
+
+  while (tokens.front !in innerStmtFollowSet) {
+    auto stmt = parseStatement(tokens);
+    if (!stmt[0]) parseError("Expected statement", tokens.front.lineNum);
+    
+    if (stmt[0].type in innerStmtDisallowedSet) {
+      parseError("Can't have a statement of type " ~ stmt[0].type.to!string ~ " here", tokens.front.lineNum);
+    }
+    
+    stmts ~= stmt[0];
+    tokens = stmt[1];
+  }
+
+  return tuple(new StmtSeq(stmts, lineNum), tokens);  
+}
+
+Tuple!(Statement, TokenRange) parseStatement(TokenRange tokens) {
+  Tuple!(Statement, TokenRange) result;
+
+  switch (tokens.front) {
+    case "if":
+      result = parseIfStatement(tokens);
+    break;
+    //case "while":
+    //  result = parseIfStatement(tokens);
+    //break;
+    //case "for":
+    //  result = parseIfStatement(tokens);
+    //break;
+    //case "return":
+    //  result = parseIfStatement(tokens);
+    //break;
+    //case "func":
+    //  result = parseIfStatement(tokens);
+    //break;
+    //case "define":
+    //  result = parseIfStatement(tokens);
+    //break;
+    default:
+      if (tokens.front.type == Token.Type.IDENT) {
+        result = parseAssignOrCallStatement(tokens);
+      }
+    break;
+  }
+
+  if (!result[0]) parseError("Invalid statement", tokens.front.lineNum);
+  return tuple(result[0], result[1]);
+}
+
+Tuple!(Statement, TokenRange) parseIfStatement(TokenRange tokens) {
+  int lineNum = tokens.front.lineNum;
+
+  if (tokens.front != "if") parseError("Expected 'if' to begin if statement", lineNum);
+  tokens.popFront;
+
+  auto cond = parseExpression(tokens);
+  if (!cond[0]) parseError("Expected expression after 'if'", tokens.front.lineNum);
+  tokens = cond[1];
+
+  if (tokens.front != "then") parseError("Expected 'then' to continue if statement", tokens.front.lineNum);
+  tokens.popFront;
+
+  auto mainBody = parseInnerStmtSeq(tokens);
+  if (!mainBody[0]) parseError("Expected statements after 'then'", tokens.front.lineNum);
+  tokens = mainBody[1];
+
+  Tuple!(Expression, StmtSeq)[] elseIfs;
+  while (tokens.front == "elif") {
+    tokens.popFront;
+
+    auto elseIfCond = parseExpression(tokens);
+    if (!elseIfCond[0]) parseError("Expected expression for elif condition", tokens.front.lineNum);
+    tokens = elseIfCond[1];
+
+    if (tokens.front != "then") parseError("Expected 'then' to continue elif", tokens.front.lineNum);
+    tokens.popFront;
+
+    auto elseIfBody = parseInnerStmtSeq(tokens);
+    if (!elseIfBody[0]) parseError("Expected statements after 'then'", tokens.front.lineNum);
+    tokens = elseIfBody[1];
+
+    elseIfs ~= tuple(elseIfCond[0], elseIfBody[0]);
+  }
+
+  StmtSeq elseBody;
+  if (tokens.front == "else") {
+    tokens.popFront;
+    
+    auto theElse = parseInnerStmtSeq(tokens);
+    if (!theElse[0]) parseError("Expected statements after 'else'", tokens.front.lineNum);
+    tokens = theElse[1];
+
+    elseBody = theElse[0];
+  }
+
+  if (tokens.front != "endif") parseError("Expected 'endif' to end if statement", tokens.front.lineNum);
+  tokens.popFront;
+
+  return tuple(
+    cast(Statement) (new IfStatement(cond[0], mainBody[0], elseIfs, elseBody, lineNum)),
+    tokens
+  );
+}
+
+Tuple!(Statement, TokenRange) parseAssignOrCallStatement(TokenRange tokens) {
+  return parseAssignmentStmt(tokens);
+}
+
+Tuple!(Statement, TokenRange) parseAssignmentStmt(TokenRange tokens) {
   auto val = parseValue(tokens);
-  if (!val[0]) return tuple(cast(AssignStatement)null, tokens);
+  if (!val[0]) return tuple(cast(Statement)null, tokens);
   int lineNum = tokens.front.lineNum;
   tokens = val[1];
 
-  if (tokens.front != ":=") return tuple(cast(AssignStatement)null, tokens);
+  if (tokens.front != ":=") return tuple(cast(Statement)null, tokens);
   //if (tokens.front != ":=") parseError("Expected ':=' for assignment statement");
   tokens.popFront;
 
@@ -99,10 +259,13 @@ Tuple!(AssignStatement, TokenRange) parseAssignmentStmt(TokenRange tokens) @safe
   if (tokens.front != ";") parseError("Expected ';' to end assignment statement", tokens.front.lineNum);
   tokens.popFront;
 
-  return tuple(new AssignStatement(val[0], exp[0], lineNum), tokens);
+  return tuple(
+    cast(Statement) (new AssignStatement(val[0], exp[0], lineNum)),
+    tokens
+  );
 }
 
-Tuple!(Value, TokenRange) parseValue(TokenRange tokens) @safe {
+Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
   Value result;
   auto tok = tokens.front;
   if (tok.type == Token.Type.IDENT) {
@@ -112,7 +275,7 @@ Tuple!(Value, TokenRange) parseValue(TokenRange tokens) @safe {
   return tuple(result, tokens);
 }
 
-Tuple!(T, TokenRange) parseBinary(T, U, string[] ops, alias nextFunc)(TokenRange tokens) @safe {
+Tuple!(T, TokenRange) parseBinary(T, U, string[] ops, alias nextFunc)(TokenRange tokens) {
   auto expNext = nextFunc(tokens);
   if (!expNext[0]) return tuple(cast(T)null, tokens);
   int lineNum = tokens.front.lineNum;
@@ -135,7 +298,7 @@ Tuple!(T, TokenRange) parseBinary(T, U, string[] ops, alias nextFunc)(TokenRange
 }
 
 
-Tuple!(T, TokenRange) parseUnary(T, string[] ops, alias nextFunc)(TokenRange tokens) @safe {
+Tuple!(T, TokenRange) parseUnary(T, string[] ops, alias nextFunc)(TokenRange tokens) {
   string op = "";
   int lineNum = tokens.front.lineNum;
   if (ops.canFind(tokens.front)) {
@@ -157,7 +320,7 @@ alias parseExpression5 = parseBinary!(Expression5, Expression6, ["+", "-", "|"],
 alias parseExpression6 = parseBinary!(Expression6, Expression7, ["*", "/", "div", "mod", "&", "^"], parseExpression7);
 alias parseExpression7 = parseUnary!(Expression7, ["-", "~"], parseExpression8);
 
-Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) @safe {
+Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) {
   static immutable ops = ["=", "!=", ">", "<", ">=", "<="];
 
   auto expNext = parseExpression5(tokens);
@@ -182,7 +345,7 @@ Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) @safe {
   return tuple(new Expression4(expNext[0], extra, lineNum), tokens);
 }
 
-Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) @safe {
+Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
   int literal; 
   Value val;
   Expression sub;
@@ -218,7 +381,7 @@ Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) @safe {
   return tuple(cast(Expression8)null, tokens);
 }
 
-Tuple!(int, TokenRange) parseLiteral(TokenRange tokens) @safe {
+Tuple!(int, TokenRange) parseLiteral(TokenRange tokens) {
   if (tokens.front.type == Token.Type.INT) {
     auto result = tokens.front.to!int;
     tokens.popFront;
@@ -238,7 +401,7 @@ class Context {
   int[string][] globalStack;
   int[string] locals;
 
-  int getVar(string name) @safe {
+  int getVar(string name) {
     if (auto local = name in locals) return *local;
 
     foreach (frame; globalStack) {
@@ -249,69 +412,149 @@ class Context {
     return int.min;
   }
 
-  void setLocalVar(string name, int val) @safe {
+  void setLocalVar(string name, int val) {
     locals[name] = val;
   }
 }
 
-class TreeNode {
+abstract class TreeNode {
   public int lineNum;
+  public abstract int interpret(Context context) @safe; 
 }
 
 class Program : TreeNode {
-  Statement[] stmts;
+  StmtSeq stmts;
+
+  this(StmtSeq s, int ln) {
+    stmts = s;
+    lineNum = ln;
+  }
+
+  override int interpret(Context context) {
+    return stmts.interpret(context);
+  }
 }
 
-class Statement : TreeNode {
+class StmtSeq : TreeNode {
+  Statement[] stmts;
 
+  this(Statement[] s, int ln) {
+    stmts = s;
+    lineNum = ln;
+  }
+
+  override int interpret(Context context) {
+    int result = 0;
+    foreach (stmt; stmts) {
+      int interp = stmt.interpret(context);
+      if (interp) result = interp;
+    }
+    return result;
+  }
+}
+
+abstract class Statement : TreeNode {
+  enum Type {
+    ASSIGN, CALL, IF, WHILE, FOR, RETURN, FUNC, DEFINE
+  }
+
+  @property Type type() @safe;
 }
 
 class AssignStatement : Statement {
   Value lhs;
   Expression rhs;  
 
-  this(Value val, Expression exp, int ln) @safe {
+  this(Value val, Expression exp, int ln) {
     lhs = val;
     rhs = exp;
     lineNum = ln;
   }
 
-  void interpret(Context context) @safe {
+  override int interpret(Context context) {
     context.setLocalVar(lhs.name, rhs.interpret(context));
+    return 0;
   }
+
+  @property override Type type() { return Statement.Type.ASSIGN; }
 }
 
 class CallStatement : Statement {
   
+  @property override Type type() { return Statement.Type.CALL; }
 }
+
 class IfStatement : Statement {
+  Expression cond;
+  StmtSeq ifBody;
+
+  Tuple!(Expression, StmtSeq)[] elseIfs;
+
+  StmtSeq elseBody;
+
+  this(Expression c, StmtSeq ib, Tuple!(Expression, StmtSeq)[] efs, StmtSeq eb, int ln) {
+    cond = c;
+    ifBody = ib;
+    elseIfs = efs;
+    elseBody = eb;
+    lineNum = ln;
+  }
   
+  override int interpret(Context context) {
+    if (cond.interpret(context)) {
+      return ifBody.interpret(context);
+    }
+
+    foreach (ef; elseIfs) {
+      if (ef[0].interpret(context)) {
+        return ef[1].interpret(context);
+      }
+    }
+
+    if (elseBody) {
+      return elseBody.interpret(context);
+    }
+
+    return 0;
+  }
+
+  @property override Type type() { return Statement.Type.IF; }
 }
+
 class WhileStatement : Statement {
   
+  @property override Type type() { return Statement.Type.WHILE; }
 }
+
 class ForStatement : Statement {
   
+  @property override Type type() { return Statement.Type.FOR; }
 }
+
 class ReturnStatement : Statement {
   
+  @property override Type type() { return Statement.Type.RETURN; }
 }
+
 class FuncStatement : Statement {
 
+  @property override Type type() { return Statement.Type.FUNC; }
 }
+
 class DefineStatement: Statement {
 
+  @property override Type type() { return Statement.Type.DEFINE; }
 }
 
 class Value : TreeNode {
   public string name;
 
-  this(string s, int ln) @safe { 
+  this(string s, int ln) { 
     name = s; 
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     int result = context.getVar(name);
 
     if (result == int.min) runtimeError("No variable of name " ~ name ~ " has been assigned", lineNum);
@@ -324,13 +567,13 @@ class Expression : TreeNode {
   Expression2 sub;
   Tuple!(string, Expression2)[] extra;
 
-  this(Expression2 s, Tuple!(string, Expression2)[] e, int ln) @safe {
+  this(Expression2 s, Tuple!(string, Expression2)[] e, int ln) {
     sub = s;
     extra = e;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     int result = sub.interpret(context);
 
     foreach (x; extra) {
@@ -355,13 +598,13 @@ class Expression2 : TreeNode {
   Expression3 sub;
   Tuple!(string, Expression3)[] extra;
 
-  this(Expression3 s, Tuple!(string, Expression3)[] e, int ln) @safe {
+  this(Expression3 s, Tuple!(string, Expression3)[] e, int ln) {
     sub = s;
     extra = e;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     int result = sub.interpret(context);
 
     foreach (x; extra) {
@@ -381,13 +624,13 @@ class Expression3 : TreeNode {
   string op;
   Expression4 sub;
 
-  this(string o, Expression4 s, int ln) @safe {
+  this(string o, Expression4 s, int ln) {
     op = o;
     sub = s;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     if (op == "not") {
       if (sub.interpret(context)) return 0;
       return 1;
@@ -401,13 +644,13 @@ class Expression4 : TreeNode {
   Expression5 sub;
   Tuple!(string, Expression5) extra;
   
-  this(Expression5 s, Tuple!(string, Expression5) e, int ln) @safe {
+  this(Expression5 s, Tuple!(string, Expression5) e, int ln) {
     sub = s;
     extra = e;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     int result = sub.interpret(context);
 
     if (!extra[1]) return result;
@@ -449,13 +692,13 @@ class Expression5 : TreeNode {
   Expression6 sub;
   Tuple!(string, Expression6)[] extra;
   
-  this(Expression6 s, Tuple!(string, Expression6)[] e, int ln) @safe {
+  this(Expression6 s, Tuple!(string, Expression6)[] e, int ln) {
     sub = s;
     extra = e;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     int result = sub.interpret(context);
 
     foreach (x; extra) {
@@ -484,13 +727,13 @@ class Expression6 : TreeNode {
   Expression7 sub;
   Tuple!(string, Expression7)[] extra;
 
-  this(Expression7 s, Tuple!(string, Expression7)[] e, int ln) @safe {
+  this(Expression7 s, Tuple!(string, Expression7)[] e, int ln) {
     sub = s;
     extra = e;
     lineNum = ln;
   }
   
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     int result = sub.interpret(context);
 
     foreach (x; extra) {
@@ -528,13 +771,13 @@ class Expression7 : TreeNode {
   string op;
   Expression8 sub;
   
-  this(string o, Expression8 s, int ln) @safe {
+  this(string o, Expression8 s, int ln) {
     op = o;
     sub = s;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     if (op == "-") {
       return -sub.interpret(context);
     }
@@ -551,14 +794,14 @@ class Expression8 : TreeNode {
   Value val;
   Expression sub;
 
-  this(int l, Value v, Expression s, int ln) @safe {
+  this(int l, Value v, Expression s, int ln) {
     literal = l;
     val = v;
     sub = s;
     lineNum = ln;
   }
 
-  int interpret(Context context) @safe {
+  override int interpret(Context context) {
     if (sub) return sub.interpret(context);
     else if (val) return val.interpret(context);
     return literal;

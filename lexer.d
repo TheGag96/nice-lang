@@ -1,5 +1,7 @@
 import std.algorithm, std.string, std.array, std.range, std.ascii, std.typecons, std.conv;
 
+@safe:
+
 unittest {
   string code = "
     if x = 3 then
@@ -39,20 +41,20 @@ struct Token {
 struct TokenRange {
   Token[] tokens;
   alias tokens this;
-  
-  Token front() @safe {
+
+  Token front() {
     if (tokens.empty) return Token("", Token.Type.EOF, -1);
     return tokens.front;
   }
 
-  void popFront() @safe {
+  void popFront() {
     if (tokens.length) tokens.popFront;
   }
 
   bool empty() { return tokens.length == 0; }
 }
 
-TokenRange tokenize(string s) @safe {
+TokenRange tokenize(string s) {
   auto app = appender!(Token[]);
 
   static immutable funcsAlpha = [&matchIdent, &matchKeyword];
@@ -114,10 +116,12 @@ TokenRange tokenize(string s) @safe {
     s = s[longest.length..$];
   }
 
+  //app.put(Token("", Token.Type.EOF, lineNum));
+
   return TokenRange(app.data);
 }
 
-Token matchIdent(string s) @safe {
+Token matchIdent(string s) {
   int state = 0;
 
   foreach (i, c; s) {
@@ -133,7 +137,7 @@ Token matchIdent(string s) @safe {
   return Token(s, Token.Type.IDENT, 0);
 }
 
-Token matchInt(string s) @safe {
+Token matchInt(string s) {
   bool atLeastOneNum = false;
   if (!s.length) return Token("", Token.Type.INT, 0);
 
@@ -151,7 +155,7 @@ Token matchInt(string s) @safe {
   else return Token("", Token.Type.INT, 0);
 }
 
-Token matchFloat(string s) @safe {
+Token matchFloat(string s) {
   string intPart = matchInt(s).str;
   if (!intPart.length) return Token("", Token.Type.FLOAT, 0);
 
@@ -166,7 +170,7 @@ Token matchFloat(string s) @safe {
   return Token(s, Token.Type.FLOAT, 0);
 }
 
-Token matchString(string s) @safe {
+Token matchString(string s) {
   if (s.length < 2 || s[0] != '"') return Token("", Token.Type.STRING, 0);
 
   foreach (i, c; s[1..$]) {
@@ -177,7 +181,7 @@ Token matchString(string s) @safe {
   return Token("", Token.Type.STRING, 0);
 }
 
-Token matchChar(string s) @safe {
+Token matchChar(string s) {
   if (s.length < 3 || s[0] != '\'') return Token("", Token.Type.CHAR, 0);
 
   if (s.length >= 4 && s[1] == '\\' && s[3] == '\'') {
@@ -192,7 +196,7 @@ Token matchChar(string s) @safe {
   return Token("", Token.Type.CHAR, 0);
 }
 
-Tuple!(string, int) matchOneLineComment(string s) @safe {
+Tuple!(string, int) matchOneLineComment(string s) {
   if (s.length < 2 || !s.startsWith("//")) return tuple("", 0);
 
   foreach (i, c; s[1..$]) {
@@ -202,7 +206,7 @@ Tuple!(string, int) matchOneLineComment(string s) @safe {
   return tuple(s, 0);
 }
 
-Tuple!(string, int) matchMultilineComment(string s) @safe {
+Tuple!(string, int) matchMultilineComment(string s) {
   if (s.length < 2 || !s.startsWith("/*")) return tuple("", 0);
 
   int newlines = 0;
@@ -215,13 +219,13 @@ Tuple!(string, int) matchMultilineComment(string s) @safe {
   return tuple("", 0);
 }
 
-Tuple!(string, int) matchComment(string s) @safe {
+Tuple!(string, int) matchComment(string s) {
   auto oneLine = matchOneLineComment(s);
   if (!oneLine.length) return matchMultilineComment(s);
   else return oneLine;
 }
 
-Token matchKeyword(string s) @safe {
+Token matchKeyword(string s) {
   static immutable string[] keywords = [
     "if", "then", "else", "elif", "endif",
     "while", "do", "endwhile",
@@ -240,7 +244,7 @@ Token matchKeyword(string s) @safe {
   return Token("", Token.Type.KEYWORD, 0);
 }
 
-Token matchOperator(string s) @safe {
+Token matchOperator(string s) {
   static immutable string[] ops = [
     "(", ")", ":=", ";",
     "+", "-", "*", "/", "|", "&", "^", "~",
@@ -255,7 +259,7 @@ Token matchOperator(string s) @safe {
   return Token("", Token.Type.OP, 0);  
 }
 
-Tuple!(string, int) matchWhitespace(string s) @safe {
+Tuple!(string, int) matchWhitespace(string s) {
   int newlines = 0;
 
   foreach (i, c; s) {
