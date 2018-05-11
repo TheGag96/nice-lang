@@ -174,7 +174,7 @@ Token matchString(string s) {
   if (s.length < 2 || s[0] != '"') return Token("", Token.Type.STRING, 0);
 
   foreach (i, c; s[1..$]) {
-    if (c == '"') return Token(s[0..i+1], Token.Type.STRING);
+    if (c == '"') return Token(s[0..i+2], Token.Type.STRING);
     else if (c == '\n') return Token("", Token.Type.STRING, 0);
   }
 
