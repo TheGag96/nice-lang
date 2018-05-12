@@ -57,7 +57,7 @@ struct TokenRange {
 TokenRange tokenize(string s) {
   auto app = appender!(Token[]);
 
-  static immutable funcsAlpha = [&matchIdent, &matchKeyword];
+  static immutable funcsAlpha = [&matchKeyword, &matchIdent];
   static immutable funcsOther = [&matchInt, &matchFloat, &matchString, &matchChar, &matchOperator];
 
   Token[] matches;
@@ -96,6 +96,7 @@ TokenRange tokenize(string s) {
 
     auto funcs = s[0].isAlpha ? funcsAlpha : funcsOther;
     matches.length = 0;
+    import std.stdio;
 
     foreach (f; funcs) {
       matches ~= f(s);
@@ -164,7 +165,7 @@ Token matchFloat(string s) {
   }
 
   foreach (i, c; s[intPart.length+2..$]) {
-    if (!c.isDigit) return Token(s[0..i], Token.Type.FLOAT, 0);
+    if (!c.isDigit) return Token(s[0..i+intPart.length+2], Token.Type.FLOAT, 0);
   }
 
   return Token(s, Token.Type.FLOAT, 0);
