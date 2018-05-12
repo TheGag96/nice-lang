@@ -1,0 +1,11 @@
+func fact(x: int): int as
+  if x = 1 then 
+    result := 1;
+  else
+    result := x * fact(x-1);
+  endif
+
+  return result;
+endfunc
+
+y := fact(5);
