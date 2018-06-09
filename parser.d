@@ -415,13 +415,15 @@ Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
 
   accessorLoop:
   while (true) {
+    int accLineNum = tokens.front.lineNum;
+
     switch (tokens.front) {
       case ".":
         tokens.popFront;
         
         if (tokens.front.type != Token.Type.IDENT) parseError("Expected identifier after '.'", tokens.front.lineNum);
 
-        accessors ~= Accessor(DotAccessor(tokens.front));
+        accessors ~= new DotAccessor(tokens.front, accLineNum);
 
         tokens.popFront;
       break;
@@ -433,7 +435,7 @@ Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
         if (!exp[0]) parseError("Expected expression after '['", tokens.front.lineNum);
         tokens = exp[1];
 
-        accessors ~= Accessor(SubscriptAccessor(exp[0]));
+        accessors ~= new SubscriptAccessor(exp[0], accLineNum);
 
         if (tokens.front != "]") parseError("Expected ']' to end subscript", tokens.front.lineNum);
         tokens.popFront;
@@ -461,8 +463,7 @@ Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
 
         tokens.popFront;
 
-        RTVal[] cache = new RTVal[](args.length);
-        accessors ~= Accessor(CallAccessor(args, cache));
+        accessors ~= new CallAccessor(args, accLineNum);
       break;
 
       default:
@@ -547,7 +548,7 @@ Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) {
 }
 
 Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
-  RTVal literal; 
+  Literal literal; 
   Value val;
   Expression sub;
   int lineNum = tokens.front.lineNum;
@@ -565,7 +566,7 @@ Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
   }
 
   auto potentialLiteral = parseLiteral(tokens);
-  if (potentialLiteral[0].hasValue)  {
+  if (potentialLiteral[0])  {
     literal = potentialLiteral[0];
     tokens  = potentialLiteral[1];
     return tuple(new Expression8(literal, val, sub, lineNum), tokens);
@@ -582,38 +583,84 @@ Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
   return tuple(cast(Expression8)null, tokens);
 }
 
-Tuple!(RTVal, TokenRange) parseLiteral(TokenRange tokens) {
-  RTVal result;
+Tuple!(Literal, TokenRange) parseLiteral(TokenRange tokens) {
+  RTVal rtVal;
+  Literal result;
+  int lineNum = tokens.front.lineNum;
   
-  if (tokens.front.type == Token.Type.INT) {
-    result = tokens.front.to!int;
-    tokens.popFront;
+  switch (tokens.front.type) {
+    case Token.Type.INT:
+      rtVal = tokens.front.to!int;
+      tokens.popFront;
+    break;
+   
+    case Token.Type.FLOAT:
+      rtVal = tokens.front.to!float;
+      tokens.popFront;
+    break;
+   
+    case Token.Type.STRING:
+      rtVal = tokens.front[1..$-1]; //TODO: escape sequences
+      tokens.popFront;
+    break;
+   
+    case Token.Type.CHAR:
+      rtVal = cast(char) tokens.front[1..$-1][0]; //TODO: escape sequences
+      tokens.popFront;
+    break;
+    
+    case Token.Type.BOOL:
+      rtVal = tokens.front.to!bool;
+      tokens.popFront;
+    break;
+
+    case Token.Type.NULL:
+      rtVal = null;
+      tokens.popFront;
+    break;
+
+    default:
+      auto arr = parseArray(tokens);
+      if (!arr[0]) return tuple(cast(Literal)null, tokens);
+      result = arr[0];
+      tokens = arr[1];
+    break;
   }
-  else if (tokens.front.type == Token.Type.FLOAT) {
-    result = tokens.front.to!float;
-    tokens.popFront;
-  }
-  else if (tokens.front.type == Token.Type.STRING) {
-    result = tokens.front[1..$-1]; //TODO: escape sequences
-    tokens.popFront;
-  }
-  else if (tokens.front.type == Token.Type.CHAR) {
-    result = cast(char) tokens.front[1..$-1][0]; //TODO: escape sequences
-    tokens.popFront;
-  }
-  else if (tokens.front.type == Token.Type.BOOL) {
-    result = tokens.front.to!bool;
-    tokens.popFront;
-  }
-  else if (tokens.front.type == Token.Type.NULL) {
-    result = null;
-    tokens.popFront;
+
+  if (!result) {
+    result = new SingleLiteral(rtVal, lineNum);
   }
 
   //TODO: Change this to null when Variants are implemented
   return tuple(result, tokens);
 }
 
+Tuple!(ArrayLiteral, TokenRange) parseArray(TokenRange tokens) {
+  Expression[] exps;
+  ArrayLiteral result;
+
+  int lineNum = tokens.front.lineNum;
+
+  if (tokens.front != "[") return tuple(result, tokens);
+  tokens.popFront;
+
+  while (tokens.front != "]") {
+    auto exp = parseExpression(tokens);
+    if (!exp[0]) parseError("Expected expression in array literal", tokens.front.lineNum);
+    tokens = exp[1];
+    exps ~= exp[0];
+
+    if (tokens.front == ",") tokens.popFront;
+    else if (tokens.front != "]") {
+      parseError("Unexpected token '" ~ tokens.front ~ "' in array literal", tokens.front.lineNum); 
+    }
+  }
+
+  tokens.popFront;
+
+  result = new ArrayLiteral(exps, lineNum);
+  return tuple(result, tokens);
+}
 
 ////////////////////////
 // Runtime type stuff //
@@ -785,7 +832,49 @@ class AssignStatement : Statement {
   }
 
   override RTVal interpret(Context context) {
-    context.setLocalVar(lhs.name, rhs.interpret(context));
+    if (lhs.accessors.length) {
+      RTVal rhs           = rhs.interpret(context);
+      RTVal thingToAssign = context.getVar(lhs.name);
+      RTVal* runner       = &thingToAssign;
+      RTVal callResult;
+      bool assignable = false;
+
+      foreach (acc; lhs.accessors) {
+        switch (acc.type) {
+          case Accessor.Type.DOT:
+            runtimeError("Dot operator not implemented.", lineNum);
+          break;
+
+          case Accessor.Type.SUBSCRIPT:
+            if (runner.type != typeid(RTVal[])) runtimeError("Can't subscript a non-array", acc.lineNum);
+
+            auto index = (cast(SubscriptAccessor)acc).inside.interpret(context);
+            if (index.type != typeid(int)) runtimeError("Subscript index must be an int", acc.lineNum);
+
+            runner = &(runner.get!(RTVal[])[index.get!int]);
+            assignable = true;
+          break;
+
+          case Accessor.Type.CALL:
+            if (runner.type != typeid(RTFunction)) runtimeError("Can't call a non-function", acc.lineNum);
+            
+            callResult = acc.interpret(*runner, context);
+            runner     = &callResult;
+            assignable = callResult.type != typeid(RTVal[]);
+          break;
+
+          default: break;
+        }
+      }
+
+      if (!assignable) runtimeError("Left-hand side is not assignable", lineNum);
+
+      *runner = rhs;
+    }
+    else {
+      context.setLocalVar(lhs.name, rhs.interpret(context));
+    }
+
     return RTVal();
   }
 
@@ -992,51 +1081,88 @@ class Value : TreeNode {
 
     if (!result.hasValue) runtimeError("No variable of name " ~ name ~ " has been assigned", lineNum);
 
-    foreach (ref acc; accessors) {
-      result = acc.visit!(
-        (DotAccessor d) {
-          runtimeError("Dot operator not implemented.", lineNum);
-          return result;
-        },
-
-        (SubscriptAccessor s) {
-          runtimeError("Subscript operator not implemented.", lineNum);
-          return result;
-        },
-
-        (CallAccessor a) {
-          if (result.type != typeid(RTFunction)) runtimeError("Can't call a non-function!", lineNum);
-
-          foreach (i, arg; a.args) {
-            a.cache[i] = arg.interpret(context);
-          }
-
-          return result.get!RTFunction.call(context, a.cache, lineNum);
-        }
-      ); 
+    foreach (acc; accessors) {
+      result = acc.interpret(result, context);
     }
 
     return result;
   }
 
   bool endsWithFuncCall() {
-    return accessors.length && accessors[$-1].type == typeid(CallAccessor);
+    return accessors.length && accessors[$-1].type == Accessor.Type.CALL;
   }
 }
 
-alias Accessor = Algebraic!(DotAccessor, SubscriptAccessor, CallAccessor);
+abstract class Accessor {
+  enum Type {
+    DOT,
+    SUBSCRIPT,
+    CALL
+  }
 
-struct DotAccessor {
+  int lineNum;
+
+  abstract RTVal interpret(RTVal calling, Context context);
+  abstract @property Type type();
+}
+
+class DotAccessor : Accessor {
   string memberName;
+
+  this(string mn, int ln) {
+    memberName = mn;
+    lineNum = ln;
+  }
+
+  override RTVal interpret(RTVal calling, Context context) {
+    runtimeError("Dot operator not yet implemented.", lineNum);
+    return RTVal();
+  }
+
+  override @property Type type() { return Accessor.Type.DOT; }
 }
 
-struct SubscriptAccessor {
+class SubscriptAccessor : Accessor {
   Expression inside;
+
+  this(Expression i, int ln) {
+    inside = i;
+    lineNum = ln;
+  }
+
+  override RTVal interpret(RTVal calling, Context context) {
+    if (calling.type != typeid(RTVal[])) runtimeError("Can't subspcript a non-array!", lineNum);
+    
+    auto index = inside.interpret(context);
+    if (index.type != typeid(int)) runtimeError("Subscript must be an int", inside.lineNum);
+
+    return calling.get!(RTVal[])[index.get!int];
+  }
+
+  override @property Type type() { return Accessor.Type.SUBSCRIPT; }
 }
 
-struct CallAccessor {
+class CallAccessor : Accessor {
   Expression[] args;
-  RTVal[] cache;
+
+  this(Expression[] as, int ln) {
+    args = as;
+    lineNum = ln;
+  }
+
+  override RTVal interpret(RTVal calling, Context context) {
+    if (calling.type != typeid(RTFunction)) runtimeError("Can't call a non-function", lineNum);
+
+    RTVal[] argVals = new RTVal[](args.length);
+
+    foreach (i, arg; args) {
+      argVals[i] = arg.interpret(context);
+    }
+
+    return calling.get!RTFunction.call(context, argVals, lineNum);
+  }
+
+  override @property Type type() { return Accessor.Type.CALL; }
 }
 
 class Expression : TreeNode {
@@ -1310,11 +1436,11 @@ class Expression7 : TreeNode {
 }
 
 class Expression8 : TreeNode {
-  RTVal literal;
+  Literal literal;
   Value val;
   Expression sub;
 
-  this(RTVal l, Value v, Expression s, int ln) {
+  this(Literal l, Value v, Expression s, int ln) {
     literal = l;
     val = v;
     sub = s;
@@ -1324,6 +1450,40 @@ class Expression8 : TreeNode {
   override RTVal interpret(Context context) {
     if (sub) return sub.interpret(context);
     else if (val) return val.interpret(context);
-    return literal;
+    return literal.interpret(context);
+  }
+}
+
+class Literal : TreeNode { }
+
+class SingleLiteral : Literal {
+  RTVal rtVal;
+
+  this(RTVal v, int ln) {
+    rtVal = v;
+    lineNum = ln;
+  }
+
+  override RTVal interpret(Context context) {
+    return rtVal;
+  }
+}
+
+class ArrayLiteral : Literal {
+  Expression[] exps;
+
+  this(Expression[] es, int ln) {
+    exps = es;
+    lineNum = ln;
+  }
+
+  override RTVal interpret(Context context) {
+    RTVal[] rtVals = new RTVal[](exps.length);
+
+    foreach (i, e; exps) {
+      rtVals[i] = e.interpret(context);
+    }
+
+    return RTVal(rtVals);
   }
 }
