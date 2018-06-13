@@ -95,7 +95,7 @@ Tuple!(StmtSeq, TokenRange) parseOuterStmtSeq(TokenRange tokens) {
 bool[string] innerStmtFollowSet = null;
 bool[Statement.Type] innerStmtDisallowedSet = null;
 
-Tuple!(StmtSeq, TokenRange) parseInnerStmtSeq(TokenRange tokens) {
+Tuple!(StmtSeq, TokenRange) parseInnerStmtSeq(TokenRange tokens, bool allowReturn = false) {
   //dangit D, let me use immutable AAs
   if (!innerStmtFollowSet.length) {
     innerStmtFollowSet     = ["elif": true, "else": true, "endif" : true, "endwhile" : true, "endfor" : true, "endfunc" : true];
@@ -110,6 +110,10 @@ Tuple!(StmtSeq, TokenRange) parseInnerStmtSeq(TokenRange tokens) {
     auto stmt = parseStatement(tokens);
     if (!stmt[0]) parseError("Expected statement", tokens.front.lineNum);
     
+    if (!allowReturn && tokens.front == "return") {
+      parseError("Any return statements must be the last statement in the function", tokens.front.lineNum);
+    }
+
     if (stmt[0].type in innerStmtDisallowedSet) {
       parseError("Can't have a statement of type " ~ stmt[0].type.to!string ~ " here", tokens.front.lineNum);
     }
@@ -324,7 +328,7 @@ Tuple!(Statement, TokenRange) parseFuncStatement(TokenRange tokens) {
   if (tokens.front != "as") parseError("Expected 'as' before function body", tokens.front.lineNum);
   tokens.popFront;
 
-  auto funcBody = parseInnerStmtSeq(tokens);
+  auto funcBody = parseInnerStmtSeq(tokens, true);
   if (!funcBody[0]) parseError("Expected statements for function body", tokens.front.lineNum);
   tokens = funcBody[1];
 
@@ -728,14 +732,14 @@ alias RTVal = Algebraic!(bool, int, float, string, char, Null, RTFunction, This[
 
 bool toBool(RTVal val) {
   return val.visit!(
-    (bool b)     => b,
-    (int i)      => i != 0,
-    (float f)    => f != 0,
-    (string s)   => s.length != 0,
-    (char c)     => c != '\0',
-    (Null n)     => false,
+    (bool b)       => b,
+    (int i)        => i != 0,
+    (float f)      => f != 0,
+    (string s)     => s.length != 0,
+    (char c)       => c != '\0',
+    (Null n)       => false,
     (RTFunction f) => f !is null,
-    (RTVal[] a)  => a.length != 0,
+    (RTVal[] a)    => a.length != 0,
   );
 }
 

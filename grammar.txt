@@ -24,7 +24,8 @@ exp_5          -> exp_6 {op_5 exp_6}
 exp_6          -> exp_7 {op_6 exp_7}
 exp_7          -> [op_u] exp_8
 exp_8          -> "(" exp ")" | value | literal
-literal        -> INT | HEX | FLOAT | STRING | CHAR | BOOL | NULL
+literal        -> INT | HEX | FLOAT | STRING | CHAR | BOOL | NULL | array
+array          -> "[" [exp {"," exp}] "]"
 op_1           -> "or"
 op_2           -> "and"
 op_3           -> "not"
