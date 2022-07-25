@@ -57,7 +57,7 @@ struct TokenRange {
 TokenRange tokenize(string s) {
   auto app = appender!(Token[]);
 
-  static immutable funcsAlpha = [&matchKeyword, &matchIdent];
+  static immutable funcsAlpha = [&matchIdent, &matchKeyword]; //@HACK: this order matters for precedence
   static immutable funcsOther = [&matchInt, &matchFloat, &matchString, &matchChar, &matchOperator];
 
   Token[] matches;
@@ -96,7 +96,6 @@ TokenRange tokenize(string s) {
 
     auto funcs = s[0].isAlpha ? funcsAlpha : funcsOther;
     matches.length = 0;
-    import std.stdio;
 
     foreach (f; funcs) {
       matches ~= f(s);
@@ -228,14 +227,18 @@ Tuple!(string, int) matchComment(string s) {
 
 Token matchKeyword(string s) {
   static immutable string[] keywords = [
-    "if", "then", "else", "elif", "endif",
-    "while", "do", "endwhile",
-    "for", "endfor",
+    "if", "else", "switch", "case",
+    "struct", "union", "proc",
+    "while", "do", "break", "goto", "continue",
+    "for",
     "return",
-    "define", "func", "as", "endfunc",
-    "or", "and", "not",
-    "div", "mod",
-    "true", "false", "null"
+    "true", "false", "null",
+    "try", "catch", "throw",
+    "char", "void", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
+    "bool",
+    "string",
+    "public", "private",
+    "asm",
   ].sort!"a.length > b.length".array;
 
   foreach (word; keywords) {
@@ -247,11 +250,13 @@ Token matchKeyword(string s) {
 
 Token matchOperator(string s) {
   static immutable string[] ops = [
-    "(", ")", ":=", ";",
-    "+", "-", "*", "/", "|", "&", "^", "~",
-    ":", ",",
-    "=", "!=", ">", "<", ">=", "<=",
-    "[", "]"
+    "(", ")", "=", ";", "{", "}", "->",
+    "+", "-", "*", "/", "|", "&", "^", "~", "!", "`",
+    "||", "&&",
+    ":", ",", "..", ".",
+    "==", "!=", ">", "<", ">=", "<=",
+    "[", "]",
+    "=",
   ].sort!"a.length > b.length".array;
 
   foreach (op; ops) {

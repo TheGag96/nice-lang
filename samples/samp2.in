@@ -1,5 +1,5 @@
 x := 1;
 
-for i in 1 to 10 do
-  x := x * i;
-endfor
+for i in 1 to 10 {
+  x = x * i;
+}

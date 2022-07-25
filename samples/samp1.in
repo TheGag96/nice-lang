@@ -1,11 +1,15 @@
-func fact(x: int): int as
-  if x = 1 then 
-    result := 1;
-  else
-    result := x * fact(x-1);
-  endif
+fact :: proc(x : u32) {
+  result : u64;
+
+  if x == 1 {
+    result = 1;
+  }
+  else {
+    factResult := fact(x-1);
+    result = x * factResult;
+  }
 
   return result;
-endfunc
+}
 
-y := fact(5);
+y = fact(5);

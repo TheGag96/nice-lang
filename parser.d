@@ -1,4 +1,4 @@
-import lexer, std.algorithm, std.typecons, std.string, std.range, std.conv, std.variant;
+import lexer, std.algorithm, std.typecons, std.string, std.range, std.conv, std.variant, std.sumtype;
 
 //@safe:
 
@@ -12,21 +12,30 @@ int main(string[] args) {
 
   auto programText = readText(args[1]);
 
-  try {
-    auto program = parse(programText);
-    Context context = new Context;
-    program.interpret(context);
+  auto program = parse(programText);
+  Context context = new Context;
+  //program.interpret(context);
 
-    writeln("Globals:");
-    context.globals.each!((k, v) => writeln(k, ": ", v));
-    writeln("\nLocals:");
-    context.locals.each!((k, v) => writeln(k, ": ", v));
-  }
-  catch (Exception e) {
-    writeln(e.msg);
-  }
+  writeln("Globals:");
+  context.globals.each!((k, v) => writeln(k, ": ", v));
+  writeln("\nLocals:");
+  context.locals.each!((k, v) => writeln(k, ": ", v));
 
   return 0;
+}
+
+shared static this() {
+  TOKEN_TO_PRIMITIVE = [
+    "void": Primitive.void_,
+    "u8" : Primitive.u8, "i8" : Primitive.i8,
+    "u16" : Primitive.u16, "i16" : Primitive.i16,
+    "u32" : Primitive.u32, "i32" : Primitive.i32,
+    "u64" : Primitive.u64, "i64" : Primitive.i64,
+    "f64" : Primitive.f64, "f32" : Primitive.f32,
+    "bool" : Primitive.bool_,
+    "char" : Primitive.char_,
+    "string" : Primitive.string_,
+  ];
 }
 
 ///////////////////////////
@@ -98,8 +107,8 @@ bool[Statement.Type] innerStmtDisallowedSet = null;
 Tuple!(StmtSeq, TokenRange) parseInnerStmtSeq(TokenRange tokens, bool allowReturn = false) {
   //dangit D, let me use immutable AAs
   if (!innerStmtFollowSet.length) {
-    innerStmtFollowSet     = ["elif": true, "else": true, "endif" : true, "endwhile" : true, "endfor" : true, "endfunc" : true];
-    innerStmtDisallowedSet = [Statement.Type.FUNC : true, Statement.Type.DEFINE : true];
+    innerStmtFollowSet     = ["}" : true];
+    //innerStmtDisallowedSet = [];
   }
 
   Statement[] stmts;
@@ -109,10 +118,6 @@ Tuple!(StmtSeq, TokenRange) parseInnerStmtSeq(TokenRange tokens, bool allowRetur
   while (tokens.front !in innerStmtFollowSet) {
     auto stmt = parseStatement(tokens);
     if (!stmt[0]) parseError("Expected statement", tokens.front.lineNum);
-    
-    if (!allowReturn && tokens.front == "return") {
-      parseError("Any return statements must be the last statement in the function", tokens.front.lineNum);
-    }
 
     if (stmt[0].type in innerStmtDisallowedSet) {
       parseError("Can't have a statement of type " ~ stmt[0].type.to!string ~ " here", tokens.front.lineNum);
@@ -131,31 +136,88 @@ Tuple!(Statement, TokenRange) parseStatement(TokenRange tokens) {
   switch (tokens.front) {
     case "if":
       result = parseIfStatement(tokens);
-    break;
+      break;
     case "while":
       result = parseWhileStatement(tokens);
-    break;
+      break;
     case "for":
       result = parseForStatement(tokens);
-    break;
+      break;
     case "return":
       result = parseReturnStatement(tokens);
-    break;
-    case "func":
-      result = parseFuncStatement(tokens);
-    break;
-    //case "define":
-    //  result = parseIfStatement(tokens);
-    //break;
+      break;
     default:
       if (tokens.front.type == Token.Type.IDENT) {
-        result = parseAssignOrCallStatement(tokens);
+        result = parseDeclareAssignCallStmt(tokens);
       }
-    break;
+      else {
+        result = tuple(null, tokens);
+      }
+      break;
   }
 
   if (!result[0]) parseError("Invalid statement", tokens.front.lineNum);
   return tuple(result[0], result[1]);
+}
+
+Tuple!(Statement, TokenRange) parseDeclareStatement(TokenRange tokens) {
+  int lineNum = tokens.front.lineNum;
+
+  if (tokens.front.type != Token.Type.IDENT) parseError("Expected identifier to begin declaration", tokens.front.lineNum);
+  string name = tokens.front.str;
+  tokens.popFront;
+
+  if (tokens.front != ":") parseError("Expected ':' after declaration name", tokens.front.lineNum);
+  tokens.popFront;
+
+  TypeName* typeName;
+
+  //if either is true, assume inferred
+  if (!(tokens.front == ":" || tokens.front == "=")) {
+    auto typeNameParse = parseTypeName(tokens);
+    typeName = typeNameParse[0];
+    tokens = typeNameParse[1];
+
+    //variable without value
+    if (tokens.front == ";") {
+      tokens.popFront;
+      return tuple(cast(Statement) new DeclareStatement(name, typeName, false, TopExpression.init, lineNum), tokens);
+    }
+  }
+
+  bool _constant;
+
+  if (tokens.front == ":") {
+    _constant = true;
+  }
+  else if (tokens.front == "=") {
+    _constant = false;
+  }
+  else if (typeName == null) {
+    parseError("Expected ':', '=', or ';' in declaration", tokens.front.lineNum);
+  }
+  else {
+    parseError("Expected ':' or '=' in declaration", tokens.front.lineNum);
+  }
+
+  tokens.popFront;
+
+  auto topExpressionParse = parseTopExpression(tokens);
+  tokens = topExpressionParse[1];
+
+  bool shouldEndWithSemicolon = topExpressionParse[0].match!(
+    (ProcExpression pe) => !pe.procBody,
+    _                   => true
+  );
+
+  if (shouldEndWithSemicolon) {
+    if (tokens.front != ";") {
+      parseError("Expected ';' to end declaration", tokens.front.lineNum);
+    }
+    tokens.popFront;
+  }
+
+  return tuple(cast(Statement) new DeclareStatement(name, typeName, _constant, topExpressionParse[0], lineNum), tokens);
 }
 
 Tuple!(Statement, TokenRange) parseIfStatement(TokenRange tokens) {
@@ -164,31 +226,48 @@ Tuple!(Statement, TokenRange) parseIfStatement(TokenRange tokens) {
   if (tokens.front != "if") parseError("Expected 'if' to begin if statement", lineNum);
   tokens.popFront;
 
+  //if (tokens.front != "(") parseError("Expected '(' before if condition", tokens.front.lineNum);
+  //tokens.popFront;
+
   auto cond = parseExpression(tokens);
   if (!cond[0]) parseError("Expected expression after 'if'", tokens.front.lineNum);
   tokens = cond[1];
 
-  if (tokens.front != "then") parseError("Expected 'then' to continue if statement", tokens.front.lineNum);
+  //if (tokens.front != ")") parseError("Expected ')' after if condition", tokens.front.lineNum);
+  //tokens.popFront;
+
+  if (tokens.front != "{") parseError("Expected '{' to continue if statement", tokens.front.lineNum);
   tokens.popFront;
 
   auto mainBody = parseInnerStmtSeq(tokens);
-  if (!mainBody[0]) parseError("Expected statements after 'then'", tokens.front.lineNum);
   tokens = mainBody[1];
 
+  if (tokens.front != "}") parseError("Expected '}' to end if statement", tokens.front.lineNum);
+  tokens.popFront;
+
   Tuple!(Expression, StmtSeq)[] elseIfs;
-  while (tokens.front == "elif") {
+  while (tokens.length > 2 && tokens[0] == "else" && tokens[1] == "if") {
+    tokens.popFront;
     tokens.popFront;
 
+    //if (tokens.front != "(") parseError("Expected '(' before else if condition", tokens.front.lineNum);
+    //tokens.popFront;
+
     auto elseIfCond = parseExpression(tokens);
-    if (!elseIfCond[0]) parseError("Expected expression for elif condition", tokens.front.lineNum);
+    if (!elseIfCond[0]) parseError("Expected expression for else if condition", tokens.front.lineNum);
     tokens = elseIfCond[1];
 
-    if (tokens.front != "then") parseError("Expected 'then' to continue elif", tokens.front.lineNum);
+    //if (tokens.front != ")") parseError("Expected ')' after else if condition", tokens.front.lineNum);
+    //tokens.popFront;
+
+    if (tokens.front != "{") parseError("Expected '{' to before else if body", tokens.front.lineNum);
     tokens.popFront;
 
     auto elseIfBody = parseInnerStmtSeq(tokens);
-    if (!elseIfBody[0]) parseError("Expected statements after 'then'", tokens.front.lineNum);
     tokens = elseIfBody[1];
+
+    if (tokens.front != "}") parseError("Expected '}' to end else if statement", tokens.front.lineNum);
+    tokens.popFront;
 
     elseIfs ~= tuple(elseIfCond[0], elseIfBody[0]);
   }
@@ -196,16 +275,19 @@ Tuple!(Statement, TokenRange) parseIfStatement(TokenRange tokens) {
   StmtSeq elseBody;
   if (tokens.front == "else") {
     tokens.popFront;
-    
+
+    if (tokens.front != "{") parseError("Expected '{' before else body", tokens.front.lineNum);
+    tokens.popFront;
+
     auto theElse = parseInnerStmtSeq(tokens);
     if (!theElse[0]) parseError("Expected statements after 'else'", tokens.front.lineNum);
     tokens = theElse[1];
 
+    if (tokens.front != "}") parseError("Expected '}' to end else statement", tokens.front.lineNum);
+    tokens.popFront;
+
     elseBody = theElse[0];
   }
-
-  if (tokens.front != "endif") parseError("Expected 'endif' to end if statement", tokens.front.lineNum);
-  tokens.popFront;
 
   return tuple(
     cast(Statement) (new IfStatement(cond[0], mainBody[0], elseIfs, elseBody, lineNum)),
@@ -218,18 +300,24 @@ Tuple!(Statement, TokenRange) parseWhileStatement(TokenRange tokens) {
   if (tokens.front != "while") parseError("Expected 'while' to begin while statement", lineNum);
   tokens.popFront;
 
+  //if (tokens.front != "(") parseError("Expected '(' before while condition", tokens.front.lineNum);
+  //tokens.popFront;
+
   auto cond = parseExpression(tokens);
   if (!cond[0]) parseError("Expected expression for while condition", tokens.front.lineNum);
   tokens = cond[1];
 
-  if (tokens.front != "do") parseError("Expected 'do' after while condition", tokens.front.lineNum);
+  //if (tokens.front != ")") parseError("Expected ')' after while condition", tokens.front.lineNum);
+  //tokens.popFront;
+
+  if (tokens.front != "{)") parseError("Expected '{' before while body", tokens.front.lineNum);
   tokens.popFront;
 
   auto loopBody = parseInnerStmtSeq(tokens);
   if (!loopBody[0]) parseError("Expected statements for loop body", tokens.front.lineNum);
   tokens = loopBody[1];
 
-  if (tokens.front != "endwhile") parseError("Expected 'endwhile' to end while statement", tokens.front.lineNum);
+  if (tokens.front != "}") parseError("Expected '}' to end while statement", tokens.front.lineNum);
   tokens.popFront;
 
   return tuple(cast(Statement)(new WhileStatement(cond[0], loopBody[0], lineNum)), tokens);
@@ -259,92 +347,157 @@ Tuple!(Statement, TokenRange) parseForStatement(TokenRange tokens) {
   if (!loopHigh[0]) parseError("Expected expression for higher loop bound", tokens.front.lineNum);
   tokens = loopHigh[1];
 
-  if (tokens.front != "do") parseError("Expected 'do' to continue for statement", tokens.front.lineNum);
+  if (tokens.front != "{") parseError("Expected '{' to continue for statement", tokens.front.lineNum);
   tokens.popFront;
 
   auto loopBody = parseInnerStmtSeq(tokens);
   if (!loopBody[0]) parseError("Expected statements for the for loop body", tokens.front.lineNum);
   tokens = loopBody[1];
 
-  if (tokens.front != "endfor") parseError("Expected 'endfor' to continue for statement", tokens.front.lineNum);
+  if (tokens.front != "}") parseError("Expected '}' to continue for statement", tokens.front.lineNum);
   tokens.popFront;
 
   return tuple(cast(Statement)(new ForStatement(loopVar, loopLow[0], loopHigh[0], loopBody[0], lineNum)), tokens);
 }
 
-Tuple!(Statement, TokenRange) parseFuncStatement(TokenRange tokens) {
-  int lineNum = tokens.front.lineNum;
-  if (tokens.front != "func") parseError("Expected 'func' to begin for statement", lineNum);
-  tokens.popFront;
-  
-  if (tokens.front.type != Token.Type.IDENT) parseError("Expected identifier after 'for'", tokens.front.lineNum); 
-  string name = tokens.front.str;
-  tokens.popFront;
+Tuple!(TypeName*, TokenRange) parseTypeName(TokenRange tokens) {
+  TypeName* result;
+  TypeName** current = &result;
 
-  if (tokens.front != "(") parseError("Expected '(' after function name", tokens.front.lineNum);
-  tokens.popFront;
-
-  FuncArg[] funcArgs;
-  while (tokens.front.type == Token.Type.IDENT) {
-    string argName = tokens.front;
-    string argType; 
+  while (tokens.front == "*" || tokens.front == "[") {
+    string token = tokens.front;
     tokens.popFront;
 
-    if (tokens.front == ":") {
+    if (token == "*") {
+      Pointer!TypeName ptr;
+      *current = new TypeName(ptr);
+      current = &ptr.base;
+    }
+    else if (token == "[") {
+      bool notSlice = false;
+
+      if (tokens.front == "..") {
+        DynamicArray!TypeName dynamic;
+        tokens.popFront;
+        *current = new TypeName(dynamic);
+        current = &dynamic.base;
+        notSlice = true;
+      }
+      else if (tokens.front != "]") {
+        FixedArray!TypeName fixed;
+        auto expressionParse = parseExpression(tokens);
+        fixed.length = expressionParse[0];
+        tokens = expressionParse[1];
+        *current = new TypeName(fixed);
+        current = &fixed.base;
+        notSlice = true;
+      }
+
+      if (tokens.front != "]") {
+        parseError("Expected ']' in array type name, not" ~ tokens.front, tokens.front.lineNum);
+      }
+
       tokens.popFront;
 
-      if (tokens.front.type != Token.Type.IDENT) {
-        parseError("Expected identifier after ':' in function args list", tokens.front.lineNum); 
+      if (!notSlice) {
+        Slice!TypeName slice;
+        *current = new TypeName(slice);
+        current = &slice.base;
       }
-      argType = tokens.front;
+    }
+  }
+
+  if (tokens.front.type == Token.Type.KEYWORD) {
+    if (auto primitive = tokens.front in TOKEN_TO_PRIMITIVE) {
+      *current = new TypeName(*primitive);
+    }
+    else {
+      parseError("Expected a type name", tokens.front.lineNum);
+    }
+  }
+  else if (tokens.front.type == Token.Type.IDENT) {
+    //@TODO: Make this a full value
+    *current = new TypeName(TypeNamePlaceholder(tokens.front));
+  }
+  else {
+    parseError("Expected a type name", tokens.front.lineNum);
+  }
+
+  tokens.popFront;
+
+  return tuple(result, tokens);
+}
+
+Tuple!(ProcExpression, TokenRange) parseProcExpression(TokenRange tokens) {
+  int lineNum = tokens.front.lineNum;
+  if (tokens.front != "proc") parseError("Expected 'proc' to begin procedure expression", tokens.front.lineNum);
+  tokens.popFront;
+  
+  if (tokens.front != "(") parseError("Expected '(' after procedure name", tokens.front.lineNum);
+  tokens.popFront;
+
+  ProcArg[] procArgs;
+  while (tokens.front != ")") {
+    ProcArg newArg;
+
+    if (tokens.front.type != Token.Type.IDENT) parseError("Expected name for procedure argument", tokens.front.lineNum);
+    newArg.name = tokens.front;
+    tokens.popFront;
+
+    if (tokens.front != ":") parseError("Expected ':' after procedure argument name", tokens.front.lineNum);
+    tokens.popFront;
+
+    auto argTypeParse = parseTypeName(tokens);
+    newArg.type = argTypeParse[0];
+    tokens = argTypeParse[1];
+
+    if (tokens.front == "=") {
       tokens.popFront;
+
+      auto exp = parseExpression(tokens);
+      if (!exp[0]) parseError("Expected expression for default arg value", tokens.front.lineNum);
+      newArg.defaultVal = exp[0];
+      tokens            = exp[1];
     }
 
     if (tokens.front == ",") {
       tokens.popFront;
     }
     else if (tokens.front != ")") {
-      parseError("Unexpected token '" ~ tokens.front ~ "' in function args list", tokens.front.lineNum);
+      parseError("Unexpected token '" ~ tokens.front ~ "' in procedure args list", tokens.front.lineNum);
     }
 
-    funcArgs ~= FuncArg(argName, argType);
+    procArgs ~= newArg;
   }
 
-  if (tokens.front != ")") parseError("Expected ')' to end function args list", tokens.front.lineNum);
   tokens.popFront;
 
-  string returnType;
-  if (tokens.front == ":") {
+  TypeName* returnType;
+
+  if (tokens.front == "->") {
     tokens.popFront;
-    
-    if (tokens.front.type != Token.Type.IDENT) {
-      parseError("Expected identifier after ':' for function return type", tokens.front.lineNum); 
-    }
 
-    returnType = tokens.front;
-    tokens.popFront;
-  } 
-
-  if (tokens.front != "as") parseError("Expected 'as' before function body", tokens.front.lineNum);
-  tokens.popFront;
-
-  auto funcBody = parseInnerStmtSeq(tokens, true);
-  if (!funcBody[0]) parseError("Expected statements for function body", tokens.front.lineNum);
-  tokens = funcBody[1];
-
-  //make sure that if there's a return statement, it can only be at the end
-  foreach (i, stmt; funcBody[0].stmts) {
-    if (auto ret = cast(ReturnStatement) stmt) {
-      if (i != funcBody[0].stmts.length-1) {
-        parseError("Any return statements must be the last statement in the function", tokens.front.lineNum);
-      }
-    }
+    auto returnTypeParse = parseTypeName(tokens);
+    if (!returnTypeParse[0]) parseError("Expected return type for procedure", tokens.front.lineNum);
+    returnType = returnTypeParse[0];
+    tokens = returnTypeParse[1];
   }
 
-  if (tokens.front != "endfunc") parseError("Expected 'endfunc' to end func statement", tokens.front.lineNum);
-  tokens.popFront;
+  StmtSeq procBodySeq = null;
 
-  return tuple(cast(Statement)(new FuncStatement(name, funcArgs, funcBody[0], returnType, lineNum)), tokens);
+  if (tokens.front == "{") {
+    tokens.popFront;
+
+    auto procBody = parseInnerStmtSeq(tokens, true);
+    if (!procBody[0]) parseError("Expected statements for procedure body", tokens.front.lineNum);
+    procBodySeq = procBody[0];
+    tokens      = procBody[1];
+
+    if (tokens.front != "}") parseError("Expected '}' to end procedure definition", tokens.front.lineNum);
+    tokens.popFront;
+  }
+
+  return tuple(new ProcExpression(procArgs, procBodySeq, returnType, lineNum), tokens);
 }
 
 Tuple!(Statement, TokenRange) parseReturnStatement(TokenRange tokens) {
@@ -362,13 +515,17 @@ Tuple!(Statement, TokenRange) parseReturnStatement(TokenRange tokens) {
   return tuple(cast(Statement)(new ReturnStatement(exp[0], lineNum)), tokens);
 }
 
-Tuple!(Statement, TokenRange) parseAssignOrCallStatement(TokenRange tokens) {
+Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
+  if (tokens[0].type == Token.Type.IDENT && tokens[1] == ":") {
+    return parseDeclareStatement(tokens);
+  }
+
   auto value = parseValue(tokens);
   if (!value[0]) return tuple(cast(Statement)null, tokens);
   tokens = value[1];
 
-  if (tokens.front == ":=") {
-    return parseAssignmentStmt(tokens, value[0]);
+  if (tokens.front == "=") {
+    return parseAssignmentExpression(tokens, value[0]);
   }
   else if (tokens.front == ";") {
     if (value[0].endsWithFuncCall()) {
@@ -379,7 +536,7 @@ Tuple!(Statement, TokenRange) parseAssignOrCallStatement(TokenRange tokens) {
       );
     }
     else {
-      parseError("Statement starting with a value must end with a function call", value[0].lineNum);
+      parseError("Statement starting with a value must end with a procedure call", value[0].lineNum);
     }
   }
   else {
@@ -389,9 +546,9 @@ Tuple!(Statement, TokenRange) parseAssignOrCallStatement(TokenRange tokens) {
   return tuple(cast(Statement)null, tokens);
 }
 
-Tuple!(Statement, TokenRange) parseAssignmentStmt(TokenRange tokens, Value val) {
-  if (tokens.front != ":=") return tuple(cast(Statement)null, tokens);
-  //if (tokens.front != ":=") parseError("Expected ':=' for assignment statement");
+Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Value val) {
+  if (tokens.front != "=") return tuple(cast(Statement)null, tokens);
+  //if (tokens.front != "=") parseError("Expected '=' for assignment statement");
   tokens.popFront;
 
   auto exp = parseExpression(tokens);
@@ -402,7 +559,7 @@ Tuple!(Statement, TokenRange) parseAssignmentStmt(TokenRange tokens, Value val) 
   tokens.popFront;
 
   return tuple(
-    cast(Statement) (new AssignStatement(val, exp[0], val.lineNum)),
+    cast(Statement) (new AssignExpression(val, exp[0], val.lineNum)),
     tokens
   );
 }
@@ -453,7 +610,7 @@ Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
         bool firstOne = true;
         while (tokens.front != ")") {
           if (!firstOne) {
-            if (tokens.front != ",") parseError("Expected ',' to separate function args", tokens.front.lineNum);
+            if (tokens.front != ",") parseError("Expected ',' to separate procedure args", tokens.front.lineNum);
             tokens.popFront;
           }
 
@@ -519,6 +676,19 @@ Tuple!(T, TokenRange) parseUnary(T, string[] ops, alias nextFunc)(TokenRange tok
   return tuple(new T(op, expNext[0], lineNum), tokens);
 }
 
+Tuple!(TopExpression, TokenRange) parseTopExpression(TokenRange tokens) {
+  switch (tokens.front.str) {
+    case "proc":
+      auto procExpressionParse = parseProcExpression(tokens);
+      return tuple(TopExpression(procExpressionParse[0]), procExpressionParse[1]);
+      break;
+
+    default:
+      auto expressionParse = parseExpression(tokens);
+      return tuple(TopExpression(expressionParse[0]), expressionParse[1]);
+  }
+}
+
 alias parseExpression  = parseBinary!(Expression,  Expression2, ["or"], parseExpression2);
 alias parseExpression2 = parseBinary!(Expression2, Expression3, ["and"], parseExpression3);
 alias parseExpression3 = parseUnary!(Expression3, ["not"], parseExpression4);
@@ -527,7 +697,7 @@ alias parseExpression6 = parseBinary!(Expression6, Expression7, ["*", "/", "div"
 alias parseExpression7 = parseUnary!(Expression7, ["-", "~"], parseExpression8);
 
 Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) {
-  static immutable ops = ["=", "!=", ">", "<", ">=", "<="];
+  static immutable ops = ["==", "!=", ">", "<", ">=", "<="];
 
   auto expNext = parseExpression5(tokens);
   if (!expNext[0]) return tuple(cast(Expression4)null, tokens);
@@ -670,53 +840,53 @@ Tuple!(ArrayLiteral, TokenRange) parseArray(TokenRange tokens) {
 // Runtime type stuff //
 ////////////////////////
 
-interface Function {
+interface procedure {
   RTVal call(Context context, RTVal[] args, int lineNum);
 }
 
-class RTFunction : Function {
-  StmtSeq funcBody;
-  FuncArg[] funcArgs;
-  string returnType;
+class RTFunction : procedure {
+  StmtSeq procBody;
+  ProcArg[] procArgs;
+  TypeName* returnType;
 
-  this(StmtSeq b, FuncArg[] a, string r) {
-    funcBody = b;
-    funcArgs = a;
+  this(StmtSeq b, ProcArg[] a, TypeName* r) {
+    procBody = b;
+    procArgs = a;
     returnType = r;
   }
 
   override RTVal call(Context context, RTVal[] args, int lineNum) {
-    if (funcArgs.length != args.length) {
-      runtimeError(format("Can't call a function taking %d args with %d args", funcArgs.length, args.length), lineNum);
+    if (procArgs.length != args.length) {
+      runtimeError(format("Can't call a procedure taking %d args with %d args", procArgs.length, args.length), lineNum);
     }
 
     Context funcContext = context.newLocalContext;
 
     foreach (i, arg; args) {
-      if (funcArgs[i].type != "" && funcArgs[i].type != arg.type.toString) {
-        runtimeError(
-          format("Argument %s must be of type %s, not %s", funcArgs[i].name, funcArgs[i].type, arg.type.toString),
-          lineNum
-        );
-      }
+      //if (procArgs[i].type != "" && procArgs[i].type != arg.type.toString) {
+      //  runtimeError(
+      //    format("Argument %s must be of type %s, not %s", procArgs[i].name, procArgs[i].type, arg.type.toString),
+      //    lineNum
+      //  );
+      //}
 
-      funcContext.setLocalVar(funcArgs[i].name, arg);
+      funcContext.setLocalVar(procArgs[i].name, arg);
     }
     
-    auto returnVal = funcBody.interpret(funcContext);
+    auto returnVal = procBody.interpret(funcContext);
 
-    if (returnType != "" && returnType != returnVal.type.toString) {
-      runtimeError(
-        format("Function is meant to return a value of tyoe %s, not %s", returnType, returnVal.type.toString),
-        lineNum
-      );
-    }
+    //if (returnType != "" && returnType != returnVal.type.toString) {
+    //  runtimeError(
+    //    format("procedure is meant to return a value of tyoe %s, not %s", returnType, returnVal.type.toString),
+    //    lineNum
+    //  );
+    //}
 
     return returnVal;
   }
 }
 
-/*class BuiltInFunction(alias func) : Function {
+/*class BuiltInFunction(alias func) : procedure {
   override RTVal call(Context context, RTVal[] args, int lineNum) {
     static if (is(ReturnType!func == void)) {
 
@@ -728,7 +898,7 @@ class RTFunction : Function {
 }
 */
 alias Null = typeof(null);
-alias RTVal = Algebraic!(bool, int, float, string, char, Null, RTFunction, This[]);
+alias RTVal = Algebraic!(bool, int, float, string, char, Null, RTFunction, std.variant.This[]);
 
 bool toBool(RTVal val) {
   return val.visit!(
@@ -819,13 +989,13 @@ class StmtSeq : TreeNode {
 
 abstract class Statement : TreeNode {
   enum Type {
-    ASSIGN, CALL, IF, WHILE, FOR, RETURN, FUNC, DEFINE
+    ASSIGN, CALL, IF, WHILE, FOR, RETURN, FUNC, DECLARE
   }
 
   @property Type type() @safe;
 }
 
-class AssignStatement : Statement {
+class AssignExpression : Statement {
   Value lhs;
   Expression rhs;  
 
@@ -860,7 +1030,7 @@ class AssignStatement : Statement {
           break;
 
           case Accessor.Type.CALL:
-            if (runner.type != typeid(RTFunction)) runtimeError("Can't call a non-function", acc.lineNum);
+            if (runner.type != typeid(RTFunction)) runtimeError("Can't call a non-procedure", acc.lineNum);
             
             callResult = acc.interpret(*runner, context);
             runner     = &callResult;
@@ -1023,23 +1193,21 @@ class ReturnStatement : Statement {
   @property override Type type() { return Statement.Type.RETURN; }
 }
 
-alias FuncArg = Tuple!(string, "name", string, "type");
-class FuncStatement : Statement {
-  string name;
-  FuncArg[] args;
-  StmtSeq funcBody;
-  string returnType;
+alias ProcArg = Tuple!(string, "name", TypeName*, "type", Expression, "defaultVal");
+class ProcExpression : Statement {
+  ProcArg[] args;
+  StmtSeq procBody;
+  TypeName* returnType;
 
-  this(string n, FuncArg[] a, StmtSeq fb, string rt, int ln) {
-    name = n;
+  this(ProcArg[] a, StmtSeq fb, TypeName* rt, int ln) {
     args = a;
-    funcBody = fb;
+    procBody = fb;
     returnType = rt;
     lineNum = ln;
   }
 
   override RTVal interpret(Context context) {
-    context.setGlobalVar(name, RTVal(new RTFunction(funcBody, args, returnType)));
+    //context.setGlobalVar(name, RTVal(new RTFunction(procBody, args, returnType)));
 
     return RTVal();
   }
@@ -1047,9 +1215,26 @@ class FuncStatement : Statement {
   @property override Type type() { return Statement.Type.FUNC; }
 }
 
-class DefineStatement : Statement {
+class DeclareStatement : Statement {
+  string name;
+  TypeName* typeName;
+  bool constant;
+  TopExpression expression;
+  int lineNum;
 
-  @property override Type type() { return Statement.Type.DEFINE; }
+  this(string n, TypeName* t, bool c, TopExpression e, int ln) {
+    name = n;
+    typeName = t;
+    this.constant = c;
+    expression = e;
+    lineNum = ln;
+  }
+
+  override RTVal interpret(Context context) {
+    return RTVal();
+  }
+
+  @property override Type type() { return Statement.Type.DECLARE; }
 }
 
 //class DefType {
@@ -1155,7 +1340,7 @@ class CallAccessor : Accessor {
   }
 
   override RTVal interpret(RTVal calling, Context context) {
-    if (calling.type != typeid(RTFunction)) runtimeError("Can't call a non-function", lineNum);
+    if (calling.type != typeid(RTFunction)) runtimeError("Can't call a non-procedure", lineNum);
 
     RTVal[] argVals = new RTVal[](args.length);
 
@@ -1168,6 +1353,8 @@ class CallAccessor : Accessor {
 
   override @property Type type() { return Accessor.Type.CALL; }
 }
+
+alias TopExpression = SumType!(ProcExpression, Expression);
 
 class Expression : TreeNode {
   Expression2 sub;
@@ -1273,7 +1460,7 @@ class Expression4 : TreeNode {
     }
 
     switch (extra[0]) {
-      case "=":
+      case "==":
         result = (result == rhs);
       break;
 
@@ -1491,3 +1678,55 @@ class ArrayLiteral : Literal {
     return RTVal(rtVals);
   }
 }
+
+enum Primitive {
+  void_,
+  u8, i8,
+  u16, i16,
+  u32, i32,
+  u64, i64,
+  f32, f64,
+  bool_,
+  char_,
+  string_,
+}
+
+Primitive[string] TOKEN_TO_PRIMITIVE;
+struct Pointer(T) {
+
+  T* base;
+}
+
+struct FixedArray(T) {
+  T* base;
+  Expression length;
+}
+
+struct Slice(T) {
+  T* base;
+}
+
+struct DynamicArray(T) {
+  T* base;
+}
+
+struct Class(T) {
+  string name;
+  T[] members;
+  string[] memberNames;
+}
+
+struct Union(T) {
+  string name;
+  T[] members;
+  string[] memberNames;
+}
+
+struct TypeNamePlaceholder {
+  string name;
+}
+
+alias TypeName = SumType!(
+  Primitive, TypeNamePlaceholder, Class!(std.sumtype.This), Union!(std.sumtype.This), Pointer!(std.sumtype.This),
+  FixedArray!(std.sumtype.This), Slice!(std.sumtype.This), DynamicArray!(std.sumtype.This)
+);
