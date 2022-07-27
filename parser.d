@@ -2,6 +2,11 @@ import lexer, std.algorithm, std.typecons, std.string, std.range, std.conv, std.
 
 //@safe:
 
+debug {
+  import core.stdc.signal;
+  bool[int] breakpoints;
+}
+
 int main(string[] args) {
   import std.stdio, std.file;
 
@@ -14,7 +19,7 @@ int main(string[] args) {
 
   auto program = parse(programText);
   Context context = new Context;
-  //program.interpret(context);
+  program.interpret(context);
 
   writeln("Globals:");
   context.globals.each!((k, v) => writeln(k, ": ", v));
@@ -36,6 +41,12 @@ shared static this() {
     "char" : Primitive.char_,
     "string" : Primitive.string_,
   ];
+
+  debug {
+    //breakpoints[1]  = true;
+    breakpoints[8] = true;
+    //breakpoints[16] = true;
+  }
 }
 
 ///////////////////////////
@@ -181,7 +192,7 @@ Tuple!(Statement, TokenRange) parseDeclareStatement(TokenRange tokens) {
     //variable without value
     if (tokens.front == ";") {
       tokens.popFront;
-      return tuple(cast(Statement) new DeclareStatement(name, typeName, false, TopExpression.init, lineNum), tokens);
+      return tuple(cast(Statement) new DeclareStatement(name, typeName, false, null, lineNum), tokens);
     }
   }
 
@@ -202,13 +213,9 @@ Tuple!(Statement, TokenRange) parseDeclareStatement(TokenRange tokens) {
 
   tokens.popFront;
 
-  auto topExpressionParse = parseTopExpression(tokens);
-  tokens = topExpressionParse[1];
-
-  bool shouldEndWithSemicolon = topExpressionParse[0].match!(
-    (ProcExpression pe) => !pe.procBody,
-    _                   => true
-  );
+  auto expressionParse = parseExpression(tokens);
+  bool shouldEndWithSemicolon = tokens[tokens.length - expressionParse[1].length - 1] != "}";
+  tokens = expressionParse[1];
 
   if (shouldEndWithSemicolon) {
     if (tokens.front != ";") {
@@ -217,7 +224,7 @@ Tuple!(Statement, TokenRange) parseDeclareStatement(TokenRange tokens) {
     tokens.popFront;
   }
 
-  return tuple(cast(Statement) new DeclareStatement(name, typeName, _constant, topExpressionParse[0], lineNum), tokens);
+  return tuple(cast(Statement) new DeclareStatement(name, typeName, _constant, expressionParse[0], lineNum), tokens);
 }
 
 Tuple!(Statement, TokenRange) parseIfStatement(TokenRange tokens) {
@@ -428,7 +435,7 @@ Tuple!(TypeName*, TokenRange) parseTypeName(TokenRange tokens) {
   return tuple(result, tokens);
 }
 
-Tuple!(ProcExpression, TokenRange) parseProcExpression(TokenRange tokens) {
+Tuple!(ProcLiteral, TokenRange) parseProcLiteral(TokenRange tokens) {
   int lineNum = tokens.front.lineNum;
   if (tokens.front != "proc") parseError("Expected 'proc' to begin procedure expression", tokens.front.lineNum);
   tokens.popFront;
@@ -497,7 +504,7 @@ Tuple!(ProcExpression, TokenRange) parseProcExpression(TokenRange tokens) {
     tokens.popFront;
   }
 
-  return tuple(new ProcExpression(procArgs, procBodySeq, returnType, lineNum), tokens);
+  return tuple(new ProcLiteral(procArgs, procBodySeq, returnType, lineNum), tokens);
 }
 
 Tuple!(Statement, TokenRange) parseReturnStatement(TokenRange tokens) {
@@ -520,7 +527,7 @@ Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
     return parseDeclareStatement(tokens);
   }
 
-  auto value = parseValue(tokens);
+  auto value = parseExpression8(tokens);
   if (!value[0]) return tuple(cast(Statement)null, tokens);
   tokens = value[1];
 
@@ -546,7 +553,7 @@ Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
   return tuple(cast(Statement)null, tokens);
 }
 
-Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Value val) {
+Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Expression8 val) {
   if (tokens.front != "=") return tuple(cast(Statement)null, tokens);
   //if (tokens.front != "=") parseError("Expected '=' for assignment statement");
   tokens.popFront;
@@ -564,13 +571,13 @@ Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Value
   );
 }
 
-Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
+Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
   int lineNum = tokens.front.lineNum;
-  Value result;
+  Expression8 result;
 
-  if (tokens.front.type != Token.Type.IDENT) return tuple(result, tokens);
-  string varName = tokens.front;
-  tokens.popFront;
+  auto exp9 = parseExpression9(tokens);
+  if (!exp9[0]) return tuple(result, tokens);
+  tokens = exp9[1];
 
   Accessor[] accessors;
 
@@ -633,7 +640,7 @@ Tuple!(Value, TokenRange) parseValue(TokenRange tokens) {
     }
   }
 
-  result = new Value(varName, accessors, lineNum);
+  result = new Expression8(exp9[0], accessors, lineNum);
 
   return tuple(result, tokens);
 }
@@ -676,19 +683,6 @@ Tuple!(T, TokenRange) parseUnary(T, string[] ops, alias nextFunc)(TokenRange tok
   return tuple(new T(op, expNext[0], lineNum), tokens);
 }
 
-Tuple!(TopExpression, TokenRange) parseTopExpression(TokenRange tokens) {
-  switch (tokens.front.str) {
-    case "proc":
-      auto procExpressionParse = parseProcExpression(tokens);
-      return tuple(TopExpression(procExpressionParse[0]), procExpressionParse[1]);
-      break;
-
-    default:
-      auto expressionParse = parseExpression(tokens);
-      return tuple(TopExpression(expressionParse[0]), expressionParse[1]);
-  }
-}
-
 alias parseExpression  = parseBinary!(Expression,  Expression2, ["or"], parseExpression2);
 alias parseExpression2 = parseBinary!(Expression2, Expression3, ["and"], parseExpression3);
 alias parseExpression3 = parseUnary!(Expression3, ["not"], parseExpression4);
@@ -721,9 +715,9 @@ Tuple!(Expression4, TokenRange) parseExpression4(TokenRange tokens) {
   return tuple(new Expression4(expNext[0], extra, lineNum), tokens);
 }
 
-Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
+Tuple!(Expression9, TokenRange) parseExpression9(TokenRange tokens) {
   Literal literal; 
-  Value val;
+  string name;
   Expression sub;
   int lineNum = tokens.front.lineNum;
   
@@ -736,25 +730,24 @@ Tuple!(Expression8, TokenRange) parseExpression8(TokenRange tokens) {
     if (tokens.front != ")") parseError("Expected ending ) after expression", tokens.front.lineNum);
     tokens.popFront;
 
-    return tuple(new Expression8(literal, val, sub, lineNum), tokens);
+    return tuple(new Expression9(literal, name, sub, lineNum), tokens);
   }
 
   auto potentialLiteral = parseLiteral(tokens);
   if (potentialLiteral[0])  {
     literal = potentialLiteral[0];
     tokens  = potentialLiteral[1];
-    return tuple(new Expression8(literal, val, sub, lineNum), tokens);
+    return tuple(new Expression9(literal, name, sub, lineNum), tokens);
   }
 
-  auto potentialValue = parseValue(tokens);
-  if (potentialValue[0])  {
-    val = potentialValue[0];
-    tokens = potentialValue[1];
-    return tuple(new Expression8(literal, val, sub, lineNum), tokens);
+  if (tokens.front.type == Token.Type.IDENT)  {
+    name = tokens.front;
+    tokens.popFront;
+    return tuple(new Expression9(literal, name, sub, lineNum), tokens);
   }
 
   parseError("Expected literal, value, or parenthesized expression", lineNum);
-  return tuple(cast(Expression8)null, tokens);
+  return tuple(cast(Expression9)null, tokens);
 }
 
 Tuple!(Literal, TokenRange) parseLiteral(TokenRange tokens) {
@@ -766,39 +759,53 @@ Tuple!(Literal, TokenRange) parseLiteral(TokenRange tokens) {
     case Token.Type.INT:
       rtVal = tokens.front.to!int;
       tokens.popFront;
-    break;
+      break;
    
     case Token.Type.FLOAT:
       rtVal = tokens.front.to!float;
       tokens.popFront;
-    break;
+      break;
    
     case Token.Type.STRING:
       rtVal = tokens.front[1..$-1]; //TODO: escape sequences
       tokens.popFront;
-    break;
+      break;
    
     case Token.Type.CHAR:
       rtVal = cast(char) tokens.front[1..$-1][0]; //TODO: escape sequences
       tokens.popFront;
-    break;
+      break;
     
     case Token.Type.BOOL:
       rtVal = tokens.front.to!bool;
       tokens.popFront;
-    break;
+      break;
 
     case Token.Type.NULL:
       rtVal = null;
       tokens.popFront;
-    break;
+      break;
 
     default:
-      auto arr = parseArray(tokens);
-      if (!arr[0]) return tuple(cast(Literal)null, tokens);
-      result = arr[0];
-      tokens = arr[1];
-    break;
+      switch (tokens.front.str) {
+        case "proc":
+          auto proc = parseProcLiteral(tokens);
+          if (!proc[0]) return tuple(cast(Literal)null, tokens);
+          result = proc[0];
+          tokens = proc[1];
+          break;
+        case "[":
+          auto arr = parseArray(tokens);
+          if (!arr[0]) return tuple(cast(Literal)null, tokens);
+          result = arr[0];
+          tokens = arr[1];
+          break;
+        default:
+          return tuple(cast(Literal)null, tokens);
+          break;
+      }
+
+      break;
   }
 
   if (!result) {
@@ -841,7 +848,7 @@ Tuple!(ArrayLiteral, TokenRange) parseArray(TokenRange tokens) {
 ////////////////////////
 
 interface procedure {
-  RTVal call(Context context, RTVal[] args, int lineNum);
+  RTVal* call(Context context, RTVal*[] args, int lineNum);
 }
 
 class RTFunction : procedure {
@@ -855,12 +862,12 @@ class RTFunction : procedure {
     returnType = r;
   }
 
-  override RTVal call(Context context, RTVal[] args, int lineNum) {
+  override RTVal* call(Context context, RTVal*[] args, int lineNum) {
     if (procArgs.length != args.length) {
       runtimeError(format("Can't call a procedure taking %d args with %d args", procArgs.length, args.length), lineNum);
     }
 
-    Context funcContext = context.newLocalContext;
+    Context funcContext = context.newLocalContext(context);
 
     foreach (i, arg; args) {
       //if (procArgs[i].type != "" && procArgs[i].type != arg.type.toString) {
@@ -870,7 +877,7 @@ class RTFunction : procedure {
       //  );
       //}
 
-      funcContext.setLocalVar(procArgs[i].name, arg);
+      funcContext.setLocalVar(procArgs[i].name, *arg);
     }
     
     auto returnVal = procBody.interpret(funcContext);
@@ -887,7 +894,7 @@ class RTFunction : procedure {
 }
 
 /*class BuiltInFunction(alias func) : procedure {
-  override RTVal call(Context context, RTVal[] args, int lineNum) {
+  override RTVal call(Context context, RTVal*[] args, int lineNum) {
     static if (is(ReturnType!func == void)) {
 
     }
@@ -900,8 +907,8 @@ class RTFunction : procedure {
 alias Null = typeof(null);
 alias RTVal = Algebraic!(bool, int, float, string, char, Null, RTFunction, std.variant.This[]);
 
-bool toBool(RTVal val) {
-  return val.visit!(
+bool toBool(RTVal* val) {
+  return (*val).visit!(
     (bool b)       => b,
     (int i)        => i != 0,
     (float f)      => f != 0,
@@ -921,14 +928,20 @@ bool toBool(RTVal val) {
 class Context {
   RTVal[string] globals;
   RTVal[string] locals;
+  Context previous;
 
-  RTVal getVar(string name) {
-    if (auto local = name in locals) return *local;
+  RTVal* getVar(string name) {
+    if (auto local = name in locals) return local;
 
-    if (auto global = name in globals) return *global;
+    Context prevRunner = previous;
+    while (prevRunner !is null) {
+      if (auto local = name in prevRunner.locals) return local;
+      prevRunner = prevRunner.previous;
+    }
 
-    //TODO: when making these Variant objects, 
-    return RTVal();
+    if (auto global = name in globals) return global;
+
+    return null;
   }
 
   bool hasLocalVar(string name) { return cast(bool)(name in locals); }
@@ -945,16 +958,17 @@ class Context {
     locals.remove(name);
   }
 
-  Context newLocalContext() {
+  Context newLocalContext(Context prev) {
     Context result = new Context;
     result.globals = globals;
+    result.previous = prev;
     return result;
   }
 }
 
 abstract class TreeNode {
   public int lineNum;
-  public abstract RTVal interpret(Context context); 
+  public abstract RTVal* interpret(Context context);
 }
 
 class Program : TreeNode {
@@ -965,7 +979,7 @@ class Program : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     return stmts.interpret(context);
   }
 }
@@ -978,12 +992,22 @@ class StmtSeq : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    RTVal interp;
+  override RTVal* interpret(Context context) {
+    RTVal* result;
     foreach (i, stmt; stmts) {
-      interp = stmt.interpret(context);
+      debug {
+        if (stmt.lineNum in breakpoints) {
+          raise(SIGINT);
+        }
+      }
+
+      auto stmtVal = stmt.interpret(context);
+      if (stmt.type() == Statement.Type.RETURN) {
+        result = stmtVal;
+        break;
+      }
     }
-    return interp;
+    return result;
   }
 }
 
@@ -996,28 +1020,28 @@ abstract class Statement : TreeNode {
 }
 
 class AssignExpression : Statement {
-  Value lhs;
+  Expression8 lhs;
   Expression rhs;  
 
-  this(Value val, Expression exp, int ln) {
+  this(Expression8 val, Expression exp, int ln) {
     lhs = val;
     rhs = exp;
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     if (lhs.accessors.length) {
-      RTVal rhs           = rhs.interpret(context);
-      RTVal thingToAssign = context.getVar(lhs.name);
-      RTVal* runner       = &thingToAssign;
-      RTVal callResult;
+      RTVal* rhs           = rhs.interpret(context);
+      RTVal* thingToAssign = lhs.interpret(context);
+      RTVal* runner        = thingToAssign;
+      RTVal* callResult;
       bool assignable = false;
 
       foreach (acc; lhs.accessors) {
         switch (acc.type) {
           case Accessor.Type.DOT:
             runtimeError("Dot operator not implemented.", lineNum);
-          break;
+            break;
 
           case Accessor.Type.SUBSCRIPT:
             if (runner.type != typeid(RTVal[])) runtimeError("Can't subscript a non-array", acc.lineNum);
@@ -1027,15 +1051,15 @@ class AssignExpression : Statement {
 
             runner = &(runner.get!(RTVal[])[index.get!int]);
             assignable = true;
-          break;
+            break;
 
           case Accessor.Type.CALL:
             if (runner.type != typeid(RTFunction)) runtimeError("Can't call a non-procedure", acc.lineNum);
             
-            callResult = acc.interpret(*runner, context);
-            runner     = &callResult;
+            callResult = acc.interpret(runner, context);
+            runner     = callResult;
             assignable = callResult.type != typeid(RTVal[]);
-          break;
+            break;
 
           default: break;
         }
@@ -1043,28 +1067,28 @@ class AssignExpression : Statement {
 
       if (!assignable) runtimeError("Left-hand side is not assignable", lineNum);
 
-      *runner = rhs;
+      *runner = *rhs;
     }
     else {
-      context.setLocalVar(lhs.name, rhs.interpret(context));
+      *lhs.interpret(context) = *rhs.interpret(context);
     }
 
-    return RTVal();
+    return null;
   }
 
   @property override Type type() { return Statement.Type.ASSIGN; }
 }
 
 class CallStatement : Statement {
-  Value value;
+  Expression8 exp8;
 
-  this(Value v, int ln) {
-    value = v;
+  this(Expression8 e, int ln) {
+    exp8 = e;
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    return value.interpret(context);
+  override RTVal* interpret(Context context) {
+    return exp8.interpret(context);
   }
 
   @property override Type type() { return Statement.Type.CALL; }
@@ -1086,25 +1110,25 @@ class IfStatement : Statement {
     lineNum = ln;
   }
   
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     if (cond.interpret(context).toBool) {
       ifBody.interpret(context);
-      return RTVal();
+      return null;
     }
 
     foreach (ef; elseIfs) {
       if (ef[0].interpret(context).toBool) {
         ef[1].interpret(context);
-        return RTVal();
+        return null;
       }
     }
 
     if (elseBody) {
       elseBody.interpret(context);
-      return RTVal();
+      return null;
     }
 
-    return RTVal();
+    return null;
   }
 
   @property override Type type() { return Statement.Type.IF; }
@@ -1120,13 +1144,13 @@ class WhileStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    RTVal result = 0;
+  override RTVal* interpret(Context context) {
+    bool result = false;
     while (cond.interpret(context).toBool) {
-      result = 1;
+      result = true;
       loopBody.interpret(context);
     }
-    return result;
+    return new RTVal(result);
   }
   
   @property override Type type() { return Statement.Type.WHILE; }
@@ -1145,7 +1169,7 @@ class ForStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     if (context.hasLocalVar(loopVar)) {
       runtimeError("A local variable named '" ~ loopVar ~ "' has already been defined", lineNum);
     }
@@ -1166,13 +1190,13 @@ class ForStatement : Statement {
 
     foreach (x; lowVal..highVal+1) {
 
-      context.setLocalVar(loopVar, x);
+      context.setLocalVar(loopVar, *x);
       loopBody.interpret(context);
     }
 
     context.deleteLocalVar(loopVar);
 
-    return RTVal();
+    return null;
   }
 
   @property override Type type() { return Statement.Type.FOR; }
@@ -1186,7 +1210,7 @@ class ReturnStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     return exp.interpret(context);
   }
 
@@ -1194,7 +1218,7 @@ class ReturnStatement : Statement {
 }
 
 alias ProcArg = Tuple!(string, "name", TypeName*, "type", Expression, "defaultVal");
-class ProcExpression : Statement {
+class ProcLiteral : Literal {
   ProcArg[] args;
   StmtSeq procBody;
   TypeName* returnType;
@@ -1206,23 +1230,18 @@ class ProcExpression : Statement {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    //context.setGlobalVar(name, RTVal(new RTFunction(procBody, args, returnType)));
-
-    return RTVal();
+  override RTVal* interpret(Context context) {
+    return new RTVal(new RTFunction(procBody, args, returnType));
   }
-
-  @property override Type type() { return Statement.Type.FUNC; }
 }
 
 class DeclareStatement : Statement {
   string name;
   TypeName* typeName;
   bool constant;
-  TopExpression expression;
-  int lineNum;
+  Expression expression;
 
-  this(string n, TypeName* t, bool c, TopExpression e, int ln) {
+  this(string n, TypeName* t, bool c, Expression e, int ln) {
     name = n;
     typeName = t;
     this.constant = c;
@@ -1230,8 +1249,15 @@ class DeclareStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    return RTVal();
+  override RTVal* interpret(Context context) {
+    if (expression) {
+      context.setLocalVar(name, *expression.interpret(context));
+    }
+    else {
+      context.setLocalVar(name, RTVal(null)); //@TODO: Actually initialize to default val of type
+    }
+
+    return null;
   }
 
   @property override Type type() { return Statement.Type.DECLARE; }
@@ -1255,33 +1281,6 @@ class DeclareStatement : Statement {
 //  }
 //}
 
-class Value : TreeNode {
-  public string name;
-  Accessor[] accessors;
-
-  this(string s, Accessor[] a, int ln) { 
-    name = s; 
-    accessors = a;
-    lineNum = ln;
-  }
-
-  override RTVal interpret(Context context) {
-    RTVal result = context.getVar(name);
-
-    if (!result.hasValue) runtimeError("No variable of name " ~ name ~ " has been assigned", lineNum);
-
-    foreach (acc; accessors) {
-      result = acc.interpret(result, context);
-    }
-
-    return result;
-  }
-
-  bool endsWithFuncCall() {
-    return accessors.length && accessors[$-1].type == Accessor.Type.CALL;
-  }
-}
-
 abstract class Accessor {
   enum Type {
     DOT,
@@ -1291,7 +1290,7 @@ abstract class Accessor {
 
   int lineNum;
 
-  abstract RTVal interpret(RTVal calling, Context context);
+  abstract RTVal* interpret(RTVal* calling, Context context);
   abstract @property Type type();
 }
 
@@ -1303,9 +1302,9 @@ class DotAccessor : Accessor {
     lineNum = ln;
   }
 
-  override RTVal interpret(RTVal calling, Context context) {
+  override RTVal* interpret(RTVal* calling, Context context) {
     runtimeError("Dot operator not yet implemented.", lineNum);
-    return RTVal();
+    return null;
   }
 
   override @property Type type() { return Accessor.Type.DOT; }
@@ -1319,13 +1318,13 @@ class SubscriptAccessor : Accessor {
     lineNum = ln;
   }
 
-  override RTVal interpret(RTVal calling, Context context) {
+  override RTVal* interpret(RTVal* calling, Context context) {
     if (calling.type != typeid(RTVal[])) runtimeError("Can't subspcript a non-array!", lineNum);
     
     auto index = inside.interpret(context);
     if (index.type != typeid(int)) runtimeError("Subscript must be an int", inside.lineNum);
 
-    return calling.get!(RTVal[])[index.get!int];
+    return &calling.get!(RTVal[])[index.get!int];
   }
 
   override @property Type type() { return Accessor.Type.SUBSCRIPT; }
@@ -1339,10 +1338,10 @@ class CallAccessor : Accessor {
     lineNum = ln;
   }
 
-  override RTVal interpret(RTVal calling, Context context) {
+  override RTVal* interpret(RTVal* calling, Context context) {
     if (calling.type != typeid(RTFunction)) runtimeError("Can't call a non-procedure", lineNum);
 
-    RTVal[] argVals = new RTVal[](args.length);
+    RTVal*[] argVals = new RTVal*[](args.length);
 
     foreach (i, arg; args) {
       argVals[i] = arg.interpret(context);
@@ -1354,8 +1353,6 @@ class CallAccessor : Accessor {
   override @property Type type() { return Accessor.Type.CALL; }
 }
 
-alias TopExpression = SumType!(ProcExpression, Expression);
-
 class Expression : TreeNode {
   Expression2 sub;
   Tuple!(string, Expression2)[] extra;
@@ -1366,11 +1363,14 @@ class Expression : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    RTVal result = sub.interpret(context);
+  override RTVal* interpret(Context context) {
+    RTVal* value = sub.interpret(context);
+    if (!extra.length) return value;
+
+    bool result = false;
 
     foreach (x; extra) {
-      if (result.toBool) {
+      if (value.toBool) {
         //short circuit
         result = true;
         break;
@@ -1383,7 +1383,7 @@ class Expression : TreeNode {
       }
     }
 
-    return result;
+    return new RTVal(result);
   }
 }
 
@@ -1397,11 +1397,14 @@ class Expression2 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    RTVal result = sub.interpret(context);
+  override RTVal* interpret(Context context) {
+    RTVal* value = sub.interpret(context);
+    if (!extra.length) return value;
+
+    bool result = false;
 
     foreach (x; extra) {
-      if (!result.toBool) break; //short circuit
+      if (!value.toBool) break; //short circuit
 
       if (x[0] == "and") {
         if (x[1].interpret(context).toBool) result = true;
@@ -1409,7 +1412,7 @@ class Expression2 : TreeNode {
       }
     }
 
-    return result;
+    return new RTVal(result);
   }
 }
 
@@ -1423,10 +1426,10 @@ class Expression3 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     if (op == "not") {
-      if (sub.interpret(context).toBool) return RTVal(false);
-      return RTVal(true);
+      if (sub.interpret(context).toBool) return new RTVal(false);
+      return new RTVal(true);
     }
 
     return sub.interpret(context);
@@ -1443,51 +1446,52 @@ class Expression4 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    RTVal result = sub.interpret(context);
+  override RTVal* interpret(Context context) {
+    RTVal* value = sub.interpret(context);
+    bool result = false;
 
-    if (!extra[1]) return result;
-    RTVal rhs = extra[1].interpret(context);
+    if (!extra[1]) return value;
+    RTVal* rhs = extra[1].interpret(context);
 
     //make sure that our defined truthiness gets used when comparing a bool, not D's
-    if (result.type != rhs.type) {
-      if (result.type == typeid(bool)) {
-        rhs = rhs.toBool;
+    if (value.type != rhs.type) {
+      if (value.type == typeid(bool)) {
+        rhs = new RTVal(rhs.toBool);
       }
       else if (rhs.type == typeid(bool)) {
-        result = result.toBool;
+        value = new RTVal(value.toBool);
       }
     }
 
     switch (extra[0]) {
       case "==":
-        result = (result == rhs);
+        result = (*value == *rhs);
       break;
 
       case "!=":
-        result = (result != rhs);
+        result = (*value != *rhs);
       break;
 
       case ">":
-        result = (result > rhs);
+        result = (*value > *rhs);
       break;
 
       case "<":
-        result = (result < rhs);
+        result = (*value < *rhs);
       break;
 
       case ">=":
-        result = (result >= rhs);
+        result = (*value >= *rhs);
       break;
 
       case "<=":
-        result = (result <= rhs);
+        result = (*value <= *rhs);
       break;
 
       default: assert(0);
     }
 
-    return result;
+    return new RTVal(result);
   }
 }
 
@@ -1501,27 +1505,30 @@ class Expression5 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    RTVal result = sub.interpret(context);
+  override RTVal* interpret(Context context) {
+    RTVal* result = sub.interpret(context);
+    if (!extra.length) return result;
+
+    result = new RTVal(*result);
 
     foreach (x; extra) {
       switch (x[0]) {
         case "+":
-          result += x[1].interpret(context);        
+          *result += *x[1].interpret(context);
         break;
 
         case "-":
-          result -= x[1].interpret(context);        
+          *result -= *x[1].interpret(context);
         break;
 
         case "|":
-          auto rhs = x[1].interpret(context);
+          auto rhs = *x[1].interpret(context);
 
           if (!result.convertsTo!int || !rhs.convertsTo!int) {
             runtimeError("With the | operator, both sides must convert to ints", lineNum);
           }
 
-          result = cast(int) (result.coerce!int | rhs.coerce!int);        
+          *result = cast(int) (result.coerce!int | rhs.coerce!int);
         break;
 
         default: assert(0);
@@ -1542,43 +1549,45 @@ class Expression6 : TreeNode {
     lineNum = ln;
   }
   
-  override RTVal interpret(Context context) {
-    RTVal result = sub.interpret(context);
+  override RTVal* interpret(Context context) {
+    RTVal* result = sub.interpret(context);
+    if (!extra.length) return result;
+
+    result = new RTVal(*result);
 
     foreach (x; extra) {
       switch (x[0]) {
         case "*":
-          result *= x[1].interpret(context);        
-        break;
+          *result *= *x[1].interpret(context);
+          break;
 
         case "/":
-        case "div":
-          result /= x[1].interpret(context);        
-        break;
+          *result /= *x[1].interpret(context);
+          break;
 
-        case "mod":
-          result %= x[1].interpret(context);        
-        break;
+        case "%":
+          *result %= *x[1].interpret(context);
+          break;
 
         case "&":
-          auto rhs = x[1].interpret(context);
+          auto rhs = *x[1].interpret(context);
 
           if (!result.convertsTo!int || !rhs.convertsTo!int) {
             runtimeError("With the & operator, both sides must convert to ints", lineNum);
           }
 
-          result = cast(int) (result.coerce!int & rhs.coerce!int);    
-        break;
+          *result = cast(int) (result.coerce!int & rhs.coerce!int);
+          break;
 
         case "^":
-          auto rhs = x[1].interpret(context);
+          auto rhs = *x[1].interpret(context);
 
           if (!result.convertsTo!int || !rhs.convertsTo!int) {
             runtimeError("With the ^ operator, both sides must convert to ints", lineNum);
           }
 
-          result = cast(int) (result.coerce!int ^ rhs.coerce!int);     
-        break;
+          *result = cast(int) (result.coerce!int ^ rhs.coerce!int);
+          break;
 
         default: assert(0);
       }
@@ -1598,15 +1607,15 @@ class Expression7 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     if (op == "-") {
       auto val = sub.interpret(context);
 
       if (val.type == typeid(int)) {
-        return RTVal(-val.get!int);
+        return new RTVal(-val.get!int);
       }
       else if (val.type == typeid(float)) {
-        return RTVal(-val.get!float);
+        return new RTVal(-val.get!float);
       }
       else {
         runtimeError("With the - operator, the argument must be numeric", lineNum);
@@ -1619,7 +1628,7 @@ class Expression7 : TreeNode {
         runtimeError("With the ~ operator, the argument must convert to an int", lineNum);
       }
 
-      return RTVal(cast(int) (~val.coerce!int));
+      return new RTVal(cast(int) (~val.coerce!int));
     }
 
     return sub.interpret(context);
@@ -1627,20 +1636,49 @@ class Expression7 : TreeNode {
 }
 
 class Expression8 : TreeNode {
+  Expression9 exp9;
+  Accessor[] accessors;
+
+  this(Expression9 e, Accessor[] a, int ln) {
+    exp9 = e;
+    accessors = a;
+    lineNum = ln;
+  }
+
+  override RTVal* interpret(Context context) {
+    RTVal* result = exp9.interpret(context);
+
+    foreach (acc; accessors) {
+      result = acc.interpret(result, context);
+    }
+
+    return result;
+  }
+
+  bool endsWithFuncCall() {
+    return accessors.length && accessors[$-1].type == Accessor.Type.CALL;
+  }
+}
+
+class Expression9 : TreeNode {
   Literal literal;
-  Value val;
+  string name;
   Expression sub;
 
-  this(Literal l, Value v, Expression s, int ln) {
+  this(Literal l, string n, Expression s, int ln) {
     literal = l;
-    val = v;
+    name = n;
     sub = s;
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     if (sub) return sub.interpret(context);
-    else if (val) return val.interpret(context);
+    else if (name.length) {
+      auto val = context.getVar(name);
+      if (val is null) runtimeError("No variable of name " ~ name ~ " has been assigned", lineNum);
+      return val;
+    }
     return literal.interpret(context);
   }
 }
@@ -1655,8 +1693,8 @@ class SingleLiteral : Literal {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
-    return rtVal;
+  override RTVal* interpret(Context context) {
+    return &rtVal;
   }
 }
 
@@ -1668,14 +1706,14 @@ class ArrayLiteral : Literal {
     lineNum = ln;
   }
 
-  override RTVal interpret(Context context) {
+  override RTVal* interpret(Context context) {
     RTVal[] rtVals = new RTVal[](exps.length);
 
     foreach (i, e; exps) {
-      rtVals[i] = e.interpret(context);
+      rtVals[i] = *e.interpret(context);
     }
 
-    return RTVal(rtVals);
+    return new RTVal(rtVals);
   }
 }
 
