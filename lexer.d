@@ -94,7 +94,7 @@ TokenRange tokenize(string s) {
       }
     }
 
-    auto funcs = s[0].isAlpha ? funcsAlpha : funcsOther;
+    auto funcs = (s[0].isAlpha || s[0] == '_') ? funcsAlpha : funcsOther;
     matches.length = 0;
 
     foreach (f; funcs) {
@@ -126,11 +126,11 @@ Token matchIdent(string s) {
 
   foreach (i, c; s) {
     if (state == 0) {
-      if (!c.isAlpha) return Token(s[0..i], Token.Type.IDENT, 0);
+      if (!(c.isAlpha || c == '_')) return Token(s[0..i], Token.Type.IDENT, 0);
       state = 1;
     }
     else { //state == 1
-      if (!c.isAlphaNum) return Token(s[0..i], Token.Type.IDENT, 0);
+      if (!(c.isAlphaNum || c == '_')) return Token(s[0..i], Token.Type.IDENT, 0);
     }
   }
 

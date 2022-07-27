@@ -7,26 +7,103 @@ debug {
   bool[int] breakpoints;
 }
 
+bool gRepl = false;
+
 int main(string[] args) {
   import std.stdio, std.file;
 
-  if (args.length != 2) {
-    writeln("Usage: parser <program file>");
+  if (args.length > 2) {
+    writeln("Usage: parser [<program file>]");
     return 1;
   }
+  else if (args.length == 2) {
+    auto programText = readText(args[1]);
 
-  auto programText = readText(args[1]);
+    auto program = parse(programText);
+    Context context = new Context;
+    program.interpret(context);
 
-  auto program = parse(programText);
-  Context context = new Context;
-  program.interpret(context);
-
-  writeln("Globals:");
-  context.globals.each!((k, v) => writeln(k, ": ", v));
-  writeln("\nLocals:");
-  context.locals.each!((k, v) => writeln(k, ": ", v));
+    writeln("Globals:");
+    context.globals.each!((k, v) => writeln(k, ": ", v));
+    writeln("\nLocals:");
+    context.locals.each!((k, v) => writeln(k, ": ", v));
+  }
+  else {
+    repl();
+  }
 
   return 0;
+}
+
+void repl() {
+  import std.stdio : write, writeln, readln;
+
+  gRepl = true;
+
+  bool quit = false;
+
+  Context context = new Context;
+
+  while (!quit) {
+    try {
+      string total;
+
+      int parenLevel = 0, bracketLevel = 0, curlyLevel = 0;
+      do {
+        if (total.length) write("  | ");
+        else              write(">>> ");
+
+        auto line = readln;
+
+        foreach (c; line) {
+          switch (c) {
+            case '(': parenLevel++; break;
+            case ')': parenLevel--; break;
+            case '[': bracketLevel++; break;
+            case ']': bracketLevel--; break;
+            case '{': curlyLevel++; break;
+            case '}': curlyLevel--; break;
+            default: break;
+          }
+        }
+
+        total ~= line;
+      } while (parenLevel != 0 || bracketLevel != 0 || curlyLevel != 0);
+
+      auto tokens = tokenize(total);
+      auto statement = parseStatement(tokens);
+
+      RTVal* result;
+      if (statement[0]) {
+        result = statement[0].interpret(context);
+        tokens = statement[1];
+      }
+      else {
+        auto exp = parseExpression(tokens);
+
+        if (exp[0]) {
+          result = exp[0].interpret(context);
+          tokens = exp[1];
+        }
+        else {
+          runtimeError("Unable to parse input", 1);
+        }
+      }
+
+      if (tokens.length) {
+        runtimeError("Unexpected tokens after input has been parsed", 1);
+      }
+
+      if (result) {
+        context.setGlobalVar("_", *result);
+        writeln(*result);
+      }
+    }
+    catch (Exception e) {
+      writeln(e);
+      //e.printStackTrace();
+    }
+  }
 }
 
 shared static this() {
@@ -44,7 +121,7 @@ shared static this() {
 
   debug {
     //breakpoints[1]  = true;
-    breakpoints[8] = true;
+    //breakpoints[8] = true;
     //breakpoints[16] = true;
   }
 }
@@ -158,12 +235,7 @@ Tuple!(Statement, TokenRange) parseStatement(TokenRange tokens) {
       result = parseReturnStatement(tokens);
       break;
     default:
-      if (tokens.front.type == Token.Type.IDENT) {
-        result = parseDeclareAssignCallStmt(tokens);
-      }
-      else {
-        result = tuple(null, tokens);
-      }
+      result = parseDeclareAssignCallStmt(tokens);
       break;
   }
 
@@ -317,7 +389,7 @@ Tuple!(Statement, TokenRange) parseWhileStatement(TokenRange tokens) {
   //if (tokens.front != ")") parseError("Expected ')' after while condition", tokens.front.lineNum);
   //tokens.popFront;
 
-  if (tokens.front != "{)") parseError("Expected '{' before while body", tokens.front.lineNum);
+  if (tokens.front != "{") parseError("Expected '{' before while body", tokens.front.lineNum);
   tokens.popFront;
 
   auto loopBody = parseInnerStmtSeq(tokens);
@@ -523,7 +595,7 @@ Tuple!(Statement, TokenRange) parseReturnStatement(TokenRange tokens) {
 }
 
 Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
-  if (tokens[0].type == Token.Type.IDENT && tokens[1] == ":") {
+  if (tokens.length >= 2 && tokens[0].type == Token.Type.IDENT && tokens[1] == ":") {
     return parseDeclareStatement(tokens);
   }
 
@@ -534,8 +606,8 @@ Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
   if (tokens.front == "=") {
     return parseAssignmentExpression(tokens, value[0]);
   }
-  else if (tokens.front == ";") {
-    if (value[0].endsWithFuncCall()) {
+  else if (tokens.front == ";" || gRepl) {
+    if (value[0].endsWithFuncCall() || gRepl) {
       tokens.popFront;
       return tuple(
         cast(Statement)(new CallStatement(value[0], value[0].lineNum)),
@@ -1030,48 +1102,7 @@ class AssignExpression : Statement {
   }
 
   override RTVal* interpret(Context context) {
-    if (lhs.accessors.length) {
-      RTVal* rhs           = rhs.interpret(context);
-      RTVal* thingToAssign = lhs.interpret(context);
-      RTVal* runner        = thingToAssign;
-      RTVal* callResult;
-      bool assignable = false;
-
-      foreach (acc; lhs.accessors) {
-        switch (acc.type) {
-          case Accessor.Type.DOT:
-            runtimeError("Dot operator not implemented.", lineNum);
-            break;
-
-          case Accessor.Type.SUBSCRIPT:
-            if (runner.type != typeid(RTVal[])) runtimeError("Can't subscript a non-array", acc.lineNum);
-
-            auto index = (cast(SubscriptAccessor)acc).inside.interpret(context);
-            if (index.type != typeid(int)) runtimeError("Subscript index must be an int", acc.lineNum);
-
-            runner = &(runner.get!(RTVal[])[index.get!int]);
-            assignable = true;
-            break;
-
-          case Accessor.Type.CALL:
-            if (runner.type != typeid(RTFunction)) runtimeError("Can't call a non-procedure", acc.lineNum);
-            
-            callResult = acc.interpret(runner, context);
-            runner     = callResult;
-            assignable = callResult.type != typeid(RTVal[]);
-            break;
-
-          default: break;
-        }
-      }
-
-      if (!assignable) runtimeError("Left-hand side is not assignable", lineNum);
-
-      *runner = *rhs;
-    }
-    else {
-      *lhs.interpret(context) = *rhs.interpret(context);
-    }
+    *lhs.interpret(context) = *rhs.interpret(context);
 
     return null;
   }
@@ -1080,15 +1111,15 @@ class AssignExpression : Statement {
 }
 
 class CallStatement : Statement {
-  Expression8 exp8;
+  Expression exp;
 
-  this(Expression8 e, int ln) {
-    exp8 = e;
+  this(Expression e, int ln) {
+    exp = e;
     lineNum = ln;
   }
 
   override RTVal* interpret(Context context) {
-    return exp8.interpret(context);
+    return exp.interpret(context);
   }
 
   @property override Type type() { return Statement.Type.CALL; }
@@ -1250,6 +1281,10 @@ class DeclareStatement : Statement {
   }
 
   override RTVal* interpret(Context context) {
+    if (context.hasLocalVar(name)) {
+      runtimeError("Local '" ~ name ~ "' is already defined", lineNum);
+    }
+
     if (expression) {
       context.setLocalVar(name, *expression.interpret(context));
     }
@@ -1654,10 +1689,6 @@ class Expression8 : TreeNode {
 
     return result;
   }
-
-  bool endsWithFuncCall() {
-    return accessors.length && accessors[$-1].type == Accessor.Type.CALL;
-  }
 }
 
 class Expression9 : TreeNode {
@@ -1676,7 +1707,7 @@ class Expression9 : TreeNode {
     if (sub) return sub.interpret(context);
     else if (name.length) {
       auto val = context.getVar(name);
-      if (val is null) runtimeError("No variable of name " ~ name ~ " has been assigned", lineNum);
+      if (val is null) runtimeError("No such variable called '" ~ name ~ "'", lineNum);
       return val;
     }
     return literal.interpret(context);
@@ -1696,6 +1727,25 @@ class SingleLiteral : Literal {
   override RTVal* interpret(Context context) {
     return &rtVal;
   }
+}
+
+bool endsWithFuncCall(Expression exp) {
+  if (!exp || exp.extra.length) return false;
+  auto exp2 = exp.sub;
+  if (!exp2 || exp2.extra.length) return false;
+  auto exp3 = exp2.sub;
+  if (!exp3 || exp3.op.length) return false;
+  auto exp4 = exp3.sub;
+  if (!exp4 || exp4.extra[1] !is null) return false;
+  auto exp5 = exp4.sub;
+  if (!exp5 || exp5.extra.length) return false;
+  auto exp6 = exp5.sub;
+  if (!exp6 || exp6.extra.length) return false;
+  auto exp7 = exp6.sub;
+  if (!exp7 || exp7.op.length) return false;
+  auto exp8 = exp7.sub;
+  if (!exp8) return false;
+  return exp8.accessors.length && exp8.accessors[$-1].type == Accessor.Type.CALL;
 }
 
 class ArrayLiteral : Literal {
