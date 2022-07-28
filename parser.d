@@ -119,6 +119,20 @@ shared static this() {
     "string" : Primitive.string_,
   ];
 
+  TOKEN_TO_OP_ASSIGN = [
+    "="   : AssignExpression.Op.assign,
+    "+="  : AssignExpression.Op.add,
+    "-="  : AssignExpression.Op.sub,
+    "*="  : AssignExpression.Op.mul,
+    "/="  : AssignExpression.Op.div,
+    "%="  : AssignExpression.Op.mod,
+    "|="  : AssignExpression.Op.or,
+    "&="  : AssignExpression.Op.and,
+    "^="  : AssignExpression.Op.xor,
+    "||=" : AssignExpression.Op.oror,
+    "&&=" : AssignExpression.Op.andand,
+  ];
+
   debug {
     //breakpoints[1]  = true;
     //breakpoints[8] = true;
@@ -599,7 +613,7 @@ Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
     return parseDeclareStatement(tokens);
   }
 
-  auto value = parseExpression8(tokens);
+  auto value = parseExpression(tokens);
   if (!value[0]) return tuple(cast(Statement)null, tokens);
   tokens = value[1];
 
@@ -625,9 +639,14 @@ Tuple!(Statement, TokenRange) parseDeclareAssignCallStmt(TokenRange tokens) {
   return tuple(cast(Statement)null, tokens);
 }
 
-Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Expression8 val) {
-  if (tokens.front != "=") return tuple(cast(Statement)null, tokens);
-  //if (tokens.front != "=") parseError("Expected '=' for assignment statement");
+Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Expression val) {
+  AssignExpression.Op op;
+  if (auto opInTable = tokens.front.str in TOKEN_TO_OP_ASSIGN) {
+    op = *opInTable;
+  }
+  else {
+    return tuple(cast(Statement)null, tokens);
+  }
   tokens.popFront;
 
   auto exp = parseExpression(tokens);
@@ -638,7 +657,7 @@ Tuple!(Statement, TokenRange) parseAssignmentExpression(TokenRange tokens, Expre
   tokens.popFront;
 
   return tuple(
-    cast(Statement) (new AssignExpression(val, exp[0], val.lineNum)),
+    cast(Statement) (new AssignExpression(val, exp[0], op, val.lineNum)),
     tokens
   );
 }
@@ -1091,24 +1110,77 @@ abstract class Statement : TreeNode {
   @property Type type() @safe;
 }
 
-class AssignExpression : Statement {
-  Expression8 lhs;
-  Expression rhs;  
 
-  this(Expression8 val, Expression exp, int ln) {
-    lhs = val;
-    rhs = exp;
+class AssignExpression : Statement {
+  enum Op {
+    assign, add, sub, mul, div, mod, or, and, xor, oror, andand
+  }
+
+  Expression lhs;
+  Expression rhs;  
+  Op op;
+
+  this(Expression l, Expression r, Op o, int ln) {
+    lhs = l;
+    rhs = r;
+    op = o;
     lineNum = ln;
   }
 
   override RTVal* interpret(Context context) {
-    *lhs.interpret(context) = *rhs.interpret(context);
+    final switch (op) {
+      case Op.assign:
+        *lhs.interpret(context) = *rhs.interpret(context);
+        break;
+      case Op.add:
+        *lhs.interpret(context) += *rhs.interpret(context);
+        break;
+      case Op.sub:
+        *lhs.interpret(context) -= *rhs.interpret(context);
+        break;
+      case Op.mul:
+        *lhs.interpret(context) *= *rhs.interpret(context);
+        break;
+      case Op.div:
+        *lhs.interpret(context) /= *rhs.interpret(context);
+        break;
+      case Op.mod:
+        *lhs.interpret(context) %= *rhs.interpret(context);
+        break;
+      case Op.or:
+        //auto val = lhs.interpret(context);
+        //*val = *val | *rhs.interpret(context);
+        runtimeError("Op assign not implemented", lineNum);
+        break;
+      case Op.and:
+        //auto val = lhs.interpret(context);
+        //*val = *val & *rhs.interpret(context);
+        runtimeError("Op assign not implemented", lineNum);
+        break;
+      case Op.xor:
+        //auto val = lhs.interpret(context);
+        //*val = *val ^ *rhs.interpret(context);
+        runtimeError("Op assign not implemented", lineNum);
+        break;
+      case Op.oror:
+        //auto val = lhs.interpret(context);
+        //*val = *val || *rhs.interpret(context);
+        runtimeError("Op assign not implemented", lineNum);
+        break;
+      case Op.andand:
+        //auto val = lhs.interpret(context);
+        //*val = *val && *rhs.interpret(context);
+        runtimeError("Op assign not implemented", lineNum);
+        break;
+    }
 
     return null;
   }
 
   @property override Type type() { return Statement.Type.ASSIGN; }
 }
+
+AssignExpression.Op[string] TOKEN_TO_OP_ASSIGN;
 
 class CallStatement : Statement {
   Expression exp;
