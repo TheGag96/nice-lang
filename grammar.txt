@@ -5,38 +5,36 @@ prgm           -> outer_stmt_seq
 outer_stmt_seq -> {outer_stmt}+
 outer_stmt     -> inner_stmt | func | define
 inner_stmt_seq -> {inner_stmt}
-inner_stmt     -> assign_or_call | if | while | for | return
+inner_stmt     -> assign_or_exp | if | while | for | return
 declare        -> IDENT ":" [type_name] [(":" | "=") top_exp)] ";" //may be omitted if top_exp ends with "}"
 if             -> "if" exp "{" inner_stmt_seq "}" {"else" "if" exp "{" inner_stmt_seq "}"} ["else" "{" inner_stmt_seq "}"]
 while          -> "while" exp "{" inner_stmt_seq "}"
 for            -> "for" "(" IDENT "in" (INT "to" INT | IDENT) ")" "{" inner_stmt_seq "}"
 return         -> "return" exp ";"
-assign_or_call -> value (assign | call) ";"
+assign_or_exp  -> exp [assign] ";"
 assign         -> "=" exp
 value          -> IDENT {"." IDENT | "[" exp "]" | call}
-call           -> "(" [exp {"," exp}] ")"
 type_name      -> {"*" | "[" (".." | exp | nil) "]"} IDENT
 top_exp        -> proc | exp
 exp            -> exp_2 {op_1 exp_2}
 proc           -> "proc" IDENT "(" [IDENT [":" type_name] {"," IDENT [":" type_name]}] ")" ["->" type_name] ["{" inner_stmt_seq "}"]
 exp_2          -> exp_3 {op_2 exp_3}
-exp_3          -> [op_3] exp_4
-exp_4          -> exp_5 [op_4 exp_5]
-exp_5          -> exp_6 {op_5 exp_6}
-exp_6          -> exp_7 {op_6 exp_7}
-exp_7          -> [op_u] exp_8
-exp_8          -> exp_9 {"." IDENT | "[" exp "]" | call}
-exp_9          -> "(" exp ")" | IDENT | literal
+exp_3          -> exp_4 [op_4 exp_4]
+exp_4          -> exp_5 {op_5 exp_5}
+exp_5          -> exp_6 {op_6 exp_6}
+exp_6          -> {op_u_pre} exp_7 {op_u_post}
+exp_7          -> exp_8 {"." IDENT | "[" exp "]" | call}
+exp_8          -> "(" exp ")" | IDENT | literal
 literal        -> INT | HEX | FLOAT | STRING | CHAR | BOOL | NULL | array
 array          -> "[" [exp {"," exp}] "]"
 op_1           -> "||"
 op_2           -> "&&"
-op_3           -> "!"
 op_4           -> "==" | "!=" | ">" | "<" | ">=" | "<="
 op_5           -> "+" | "-" | "|"
 op_6           -> "*" | "/" | "%" | "&" | "^"
-op_u           -> "-" | "~"
-base_type      -> ident | "void" | "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64" | "char" | "bool" | "string"
+op_u_pre       -> "+" | -" | "~" | "!" | "++" | "--"
+op_u_post      -> "++" | "--"
+base_type      -> ident | "void" | "u8" | "i8" | "u16" | "i16" | "u32" | "i32" | "u64" | "i64" | "char" | "bool" | "string" | "any"
 
 
 Regex

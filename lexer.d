@@ -237,6 +237,7 @@ Token matchKeyword(string s) {
     "char", "void", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
     "bool",
     "string",
+    "any",
     "public", "private",
     "asm",
   ].sort!"a.length > b.length".array;
@@ -251,6 +252,7 @@ Token matchKeyword(string s) {
 Token matchOperator(string s) {
   static immutable string[] ops = [
     "(", ")", "=", ";", "{", "}", "->",
+    "++", "--",
     "+=", "-=", "*=", "/=", "|=", "&=", "^=", "&&=", "||=",
     "+", "-", "*", "/", "|", "&", "^", "~", "!", "`",
     "||", "&&",
