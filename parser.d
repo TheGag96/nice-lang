@@ -73,7 +73,7 @@ void repl() {
       auto tokens = tokenize(total);
       auto statement = parseStatement(tokens);
 
-      RTVal* result;
+      InterpResult result;
       if (statement[0]) {
         result = statement[0].interpret(context);
         tokens = statement[1];
@@ -94,10 +94,10 @@ void repl() {
         runtimeError("Unexpected tokens after input has been parsed", 1);
       }
 
-      if (result) {
-        context.setGlobalVar("_", *result);
-        writeln(*result);
-      }
+      RTVal val = result.get;
+
+      context.setGlobalVar("_", val);
+      writeln(val);
     }
     catch (Exception e) {
       writeln(e);
@@ -923,7 +923,7 @@ Tuple!(ArrayLiteral, TokenRange) parseArray(TokenRange tokens) {
 ////////////////////////
 
 interface procedure {
-  RTVal* call(Context context, RTVal*[] args, int lineNum);
+  InterpResult call(Context context, RTVal[] args, int lineNum);
 }
 
 class RTFunction : procedure {
@@ -937,7 +937,7 @@ class RTFunction : procedure {
     returnType = r;
   }
 
-  override RTVal* call(Context context, RTVal*[] args, int lineNum) {
+  override InterpResult call(Context context, RTVal[] args, int lineNum) {
     if (procArgs.length != args.length) {
       runtimeError(format("Can't call a procedure taking %d args with %d args", procArgs.length, args.length), lineNum);
     }
@@ -952,7 +952,7 @@ class RTFunction : procedure {
       //  );
       //}
 
-      funcContext.setLocalVar(procArgs[i].name, *arg);
+      funcContext.setLocalVar(procArgs[i].name, arg);
     }
     
     auto returnVal = procBody.interpret(funcContext);
@@ -982,8 +982,45 @@ class RTFunction : procedure {
 alias Null = typeof(null);
 alias RTVal = Algebraic!(bool, int, float, string, char, Null, RTFunction, std.variant.This*, std.variant.This[]);
 
-bool toBool(RTVal* val) {
-  return (*val).visit!(
+alias InterpResult = SumType!(RTVal, RTVal*);
+
+bool isLvalue(InterpResult val) {
+  return val.match!(
+    (RTVal* p) => true,
+    (RTVal  r) => false,
+  );
+}
+
+RTVal get(InterpResult val) {
+  return val.match!(
+    (RTVal* p) => *p,
+    (RTVal  r) => r,
+  );
+}
+
+bool convertsTo(T)(InterpResult val) {
+  return val.match!(
+    (RTVal* p) => p && p.convertsTo!T,
+    (RTVal  r) => r.convertsTo!T,
+  );
+}
+
+auto type(InterpResult val) {
+  return val.match!(
+    (RTVal* p) => p.type,
+    (RTVal  r) => r.type,
+  );
+}
+
+auto coerce(T)(InterpResult val) {
+  return val.match!(
+    (RTVal* p) => p.coerce!T,
+    (RTVal  r) => r.coerce!T,
+  );
+}
+
+bool toBool(RTVal val) {
+  return val.visit!(
     (bool b)       => b,
     (int i)        => i != 0,
     (float f)      => f != 0,
@@ -993,6 +1030,13 @@ bool toBool(RTVal* val) {
     (RTFunction f) => f !is null,
     (RTVal* p)     => p !is null,
     (RTVal[] a)    => a.length != 0,
+  );
+}
+
+bool toBool(InterpResult val) {
+  return val.match!(
+    (RTVal* p) => p && (*p).toBool,
+    (RTVal  r) => r.toBool,
   );
 }
 
@@ -1044,7 +1088,7 @@ class Context {
 
 abstract class TreeNode {
   public int lineNum;
-  public abstract RTVal* interpret(Context context);
+  public abstract InterpResult interpret(Context context);
 }
 
 class Program : TreeNode {
@@ -1055,7 +1099,7 @@ class Program : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     return stmts.interpret(context);
   }
 }
@@ -1068,8 +1112,8 @@ class StmtSeq : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* result;
+  override InterpResult interpret(Context context) {
+    InterpResult result;
     foreach (i, stmt; stmts) {
       debug {
         if (stmt.lineNum in breakpoints) {
@@ -1083,6 +1127,7 @@ class StmtSeq : TreeNode {
         break;
       }
     }
+
     return result;
   }
 }
@@ -1112,54 +1157,58 @@ class AssignExpression : Statement {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
+    RTVal* assignVal = lhs.interpret(context).match!(
+      (RTVal* p) => p,
+      (RTVal  r) => null
+    );
+
+    if (!assignVal) {
+      runtimeError("Left-hand side of assignment is not assignable", lineNum);
+    }
+
     final switch (op) {
       case Op.assign:
-        *lhs.interpret(context) = *rhs.interpret(context);
+        *assignVal = rhs.interpret(context).get;
         break;
       case Op.add:
-        *lhs.interpret(context) += *rhs.interpret(context);
+        *assignVal += rhs.interpret(context).get;
         break;
       case Op.sub:
-        *lhs.interpret(context) -= *rhs.interpret(context);
+        *assignVal -= rhs.interpret(context).get;
         break;
       case Op.mul:
-        *lhs.interpret(context) *= *rhs.interpret(context);
+        *assignVal *= rhs.interpret(context).get;
         break;
       case Op.div:
-        *lhs.interpret(context) /= *rhs.interpret(context);
+        *assignVal /= rhs.interpret(context).get;
         break;
       case Op.mod:
-        *lhs.interpret(context) %= *rhs.interpret(context);
+        *assignVal %= rhs.interpret(context).get;
         break;
       case Op.or:
-        //auto val = lhs.interpret(context);
-        //*val = *val | *rhs.interpret(context);
+        //*assignVal = *val | *rhs.interpret(context);
         runtimeError("Op assign not implemented", lineNum);
         break;
       case Op.and:
-        //auto val = lhs.interpret(context);
-        //*val = *val & *rhs.interpret(context);
+        //*assignVal = *val & *rhs.interpret(context);
         runtimeError("Op assign not implemented", lineNum);
         break;
       case Op.xor:
-        //auto val = lhs.interpret(context);
-        //*val = *val ^ *rhs.interpret(context);
+        //*assignVal = *val ^ *rhs.interpret(context);
         runtimeError("Op assign not implemented", lineNum);
         break;
       case Op.oror:
-        //auto val = lhs.interpret(context);
-        //*val = *val || *rhs.interpret(context);
+        //*assignVal = *val || *rhs.interpret(context);
         runtimeError("Op assign not implemented", lineNum);
         break;
       case Op.andand:
-        //auto val = lhs.interpret(context);
-        //*val = *val && *rhs.interpret(context);
+        //*assignVal = *val && *rhs.interpret(context);
         runtimeError("Op assign not implemented", lineNum);
         break;
     }
 
-    return null;
+    return InterpResult(RTVal());
   }
 
   @property override Type type() { return Statement.Type.ASSIGN; }
@@ -1175,7 +1224,7 @@ class CallStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     return exp.interpret(context);
   }
 
@@ -1198,26 +1247,25 @@ class IfStatement : Statement {
     lineNum = ln;
   }
   
-  override RTVal* interpret(Context context) {
-
+  override InterpResult interpret(Context context) {
     if (cond.interpret(context).toBool) {
       ifBody.interpret(context.newLocalContext);
-      return null;
+      return InterpResult(RTVal());
     }
 
     foreach (ef; elseIfs) {
       if (ef[0].interpret(context).toBool) {
         ef[1].interpret(context.newLocalContext);
-        return null;
+        return InterpResult(RTVal());
       }
     }
 
     if (elseBody) {
       elseBody.interpret(context.newLocalContext);
-      return null;
+      return InterpResult(RTVal());
     }
 
-    return null;
+    return InterpResult(RTVal());
   }
 
   @property override Type type() { return Statement.Type.IF; }
@@ -1233,13 +1281,13 @@ class WhileStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     bool result = false;
     while (cond.interpret(context).toBool) {
       result = true;
       loopBody.interpret(context.newLocalContext);
     }
-    return new RTVal(result);
+    return InterpResult(RTVal(result));
   }
   
   @property override Type type() { return Statement.Type.WHILE; }
@@ -1258,17 +1306,17 @@ class ForStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     if (context.hasLocalVar(loopVar)) {
       runtimeError("A local variable named '" ~ loopVar ~ "' has already been defined", lineNum);
     }
 
-    auto lowVal  = low.interpret(context);
+    auto lowVal  = low.interpret(context).get;
     if (lowVal.type != typeid(int)) {
       runtimeError("For loop bounds must be of type int", lineNum);
     }
 
-    auto highVal = high.interpret(context);
+    auto highVal = high.interpret(context).get;
     if (highVal.type != typeid(int)) {
       runtimeError("For loop bounds must be of type int", lineNum);
     }
@@ -1279,11 +1327,11 @@ class ForStatement : Statement {
 
     foreach (x; lowVal..highVal+1) {
       auto newContext = context.newLocalContext;
-      newContext.setLocalVar(loopVar, *x);
+      newContext.setLocalVar(loopVar, x);
       loopBody.interpret(newContext);
     }
 
-    return null;
+    return InterpResult(RTVal());
   }
 
   @property override Type type() { return Statement.Type.FOR; }
@@ -1297,7 +1345,7 @@ class ReturnStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     return exp.interpret(context);
   }
 
@@ -1317,8 +1365,8 @@ class ProcLiteral : Literal {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    return new RTVal(new RTFunction(procBody, args, returnType));
+  override InterpResult interpret(Context context) {
+    return InterpResult(RTVal(new RTFunction(procBody, args, returnType)));
   }
 }
 
@@ -1336,19 +1384,19 @@ class DeclareStatement : Statement {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     if (context.hasLocalVar(name)) {
       runtimeError("Local '" ~ name ~ "' is already defined", lineNum);
     }
 
     if (expression) {
-      context.setLocalVar(name, *expression.interpret(context));
+      context.setLocalVar(name, expression.interpret(context).get);
     }
     else {
       context.setLocalVar(name, RTVal(null)); //@TODO: Actually initialize to default val of type
     }
 
-    return null;
+    return InterpResult(RTVal());
   }
 
   @property override Type type() { return Statement.Type.DECLARE; }
@@ -1381,7 +1429,7 @@ abstract class Accessor {
 
   int lineNum;
 
-  abstract RTVal* interpret(RTVal* calling, Context context);
+  abstract InterpResult interpret(RTVal* calling, Context context);
   abstract @property Type type();
 }
 
@@ -1393,9 +1441,9 @@ class DotAccessor : Accessor {
     lineNum = ln;
   }
 
-  override RTVal* interpret(RTVal* calling, Context context) {
+  override InterpResult interpret(RTVal* calling, Context context) {
     runtimeError("Dot operator not yet implemented.", lineNum);
-    return null;
+    return InterpResult(RTVal());
   }
 
   override @property Type type() { return Accessor.Type.DOT; }
@@ -1409,13 +1457,13 @@ class SubscriptAccessor : Accessor {
     lineNum = ln;
   }
 
-  override RTVal* interpret(RTVal* calling, Context context) {
+  override InterpResult interpret(RTVal* calling, Context context) {
     if (calling.type != typeid(RTVal[])) runtimeError("Can't subspcript a non-array!", lineNum);
     
     auto index = inside.interpret(context);
     if (index.type != typeid(int)) runtimeError("Subscript must be an int", inside.lineNum);
 
-    return &calling.get!(RTVal[])[index.get!int];
+    return InterpResult(&calling.get!(RTVal[])[index.get.get!int]);
   }
 
   override @property Type type() { return Accessor.Type.SUBSCRIPT; }
@@ -1429,13 +1477,13 @@ class CallAccessor : Accessor {
     lineNum = ln;
   }
 
-  override RTVal* interpret(RTVal* calling, Context context) {
+  override InterpResult interpret(RTVal* calling, Context context) {
     if (calling.type != typeid(RTFunction)) runtimeError("Can't call a non-procedure", lineNum);
 
-    RTVal*[] argVals = new RTVal*[](args.length);
+    RTVal[] argVals = new RTVal[](args.length);
 
     foreach (i, arg; args) {
-      argVals[i] = arg.interpret(context);
+      argVals[i] = arg.interpret(context).get;
     }
 
     return calling.get!RTFunction.call(context, argVals, lineNum);
@@ -1454,8 +1502,8 @@ class Expression : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* value = sub.interpret(context);
+  override InterpResult interpret(Context context) {
+    auto value = sub.interpret(context);
     if (!extra.length) return value;
 
     bool result = false;
@@ -1474,7 +1522,7 @@ class Expression : TreeNode {
       }
     }
 
-    return new RTVal(result);
+    return InterpResult(RTVal(result));
   }
 }
 
@@ -1488,8 +1536,8 @@ class Expression2 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* value = sub.interpret(context);
+  override InterpResult interpret(Context context) {
+    auto value = sub.interpret(context);
     if (!extra.length) return value;
 
     bool result = false;
@@ -1503,7 +1551,7 @@ class Expression2 : TreeNode {
       }
     }
 
-    return new RTVal(result);
+    return InterpResult(RTVal(result));
   }
 }
 
@@ -1517,52 +1565,52 @@ class Expression3 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* value = sub.interpret(context);
+  override InterpResult interpret(Context context) {
+    auto value = sub.interpret(context);
     bool result = false;
 
     if (!extra[1]) return value;
-    RTVal* rhs = extra[1].interpret(context);
+    auto rhs = extra[1].interpret(context);
 
     //make sure that our defined truthiness gets used when comparing a bool, not D's
     if (value.type != rhs.type) {
       if (value.type == typeid(bool)) {
-        rhs = new RTVal(rhs.toBool);
+        rhs = InterpResult(RTVal(rhs.toBool));
       }
       else if (rhs.type == typeid(bool)) {
-        value = new RTVal(value.toBool);
+        value = InterpResult(RTVal(value.toBool));
       }
     }
 
     switch (extra[0]) {
       case "==":
-        result = (*value == *rhs);
-      break;
+        result = (value.get == rhs.get);
+        break;
 
       case "!=":
-        result = (*value != *rhs);
-      break;
+        result = (value.get != rhs.get);
+        break;
 
       case ">":
-        result = (*value > *rhs);
-      break;
+        result = (value.get > rhs.get);
+        break;
 
       case "<":
-        result = (*value < *rhs);
-      break;
+        result = (value.get < rhs.get);
+        break;
 
       case ">=":
-        result = (*value >= *rhs);
-      break;
+        result = (value.get >= rhs.get);
+        break;
 
       case "<=":
-        result = (*value <= *rhs);
-      break;
+        result = (value.get <= rhs.get);
+        break;
 
       default: assert(0);
     }
 
-    return new RTVal(result);
+    return InterpResult(RTVal(result));
   }
 }
 
@@ -1576,37 +1624,37 @@ class Expression4 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* result = sub.interpret(context);
-    if (!extra.length) return result;
+  override InterpResult interpret(Context context) {
+    auto val = sub.interpret(context);
+    if (!extra.length) return val;
 
-    result = new RTVal(*result);
+    RTVal result = RTVal(val.get);
 
     foreach (x; extra) {
       switch (x[0]) {
         case "+":
-          *result += *x[1].interpret(context);
+          result += x[1].interpret(context).get;
         break;
 
         case "-":
-          *result -= *x[1].interpret(context);
+          result -= x[1].interpret(context).get;
         break;
 
         case "|":
-          auto rhs = *x[1].interpret(context);
+          auto rhs = x[1].interpret(context);
 
           if (!result.convertsTo!int || !rhs.convertsTo!int) {
             runtimeError("With the | operator, both sides must convert to ints", lineNum);
           }
 
-          *result = cast(int) (result.coerce!int | rhs.coerce!int);
+          result = cast(int) (result.coerce!int | rhs.coerce!int);
         break;
 
         default: assert(0);
       }
     }
 
-    return result;
+    return InterpResult(result);
   }
 }
 
@@ -1620,51 +1668,51 @@ class Expression5 : TreeNode {
     lineNum = ln;
   }
   
-  override RTVal* interpret(Context context) {
-    RTVal* result = sub.interpret(context);
-    if (!extra.length) return result;
+  override InterpResult interpret(Context context) {
+    auto val = sub.interpret(context);
+    if (!extra.length) return val;
 
-    result = new RTVal(*result);
+    RTVal result = val.get;
 
     foreach (x; extra) {
       switch (x[0]) {
         case "*":
-          *result *= *x[1].interpret(context);
+          result *= x[1].interpret(context).get;
           break;
 
         case "/":
-          *result /= *x[1].interpret(context);
+          result /= x[1].interpret(context).get;
           break;
 
         case "%":
-          *result %= *x[1].interpret(context);
+          result %= x[1].interpret(context).get;
           break;
 
         case "&":
-          auto rhs = *x[1].interpret(context);
+          auto rhs = x[1].interpret(context);
 
           if (!result.convertsTo!int || !rhs.convertsTo!int) {
             runtimeError("With the & operator, both sides must convert to ints", lineNum);
           }
 
-          *result = cast(int) (result.coerce!int & rhs.coerce!int);
+          result = cast(int) (result.coerce!int & rhs.coerce!int);
           break;
 
         case "^":
-          auto rhs = *x[1].interpret(context);
+          auto rhs = x[1].interpret(context);
 
           if (!result.convertsTo!int || !rhs.convertsTo!int) {
             runtimeError("With the ^ operator, both sides must convert to ints", lineNum);
           }
 
-          *result = cast(int) (result.coerce!int ^ rhs.coerce!int);
+          result = cast(int) (result.coerce!int ^ rhs.coerce!int);
           break;
 
         default: assert(0);
       }
     }
 
-    return result;
+    return InterpResult(result);
   }
 }
 
@@ -1679,50 +1727,65 @@ class Expression6 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* val = sub.interpret(context);
+  override InterpResult interpret(Context context) {
+    auto val = sub.interpret(context);
+
+    RTVal* modPtr = val.match!(
+      (RTVal* p) => p,
+      (RTVal  r) => null
+    );
 
     foreach (op; postOps) {
+      if (!modPtr) {
+        runtimeError("Cannot " ~ op ~ " this value", lineNum);
+      }
+
+      auto newVal = RTVal(*modPtr);
+
       if (op == "++") {
-        auto newVal = new RTVal(*val);
-        (*val)++;
-        val = newVal;
+        (*modPtr)++;
       }
       else if (op == "--") {
-        auto newVal = new RTVal(*val);
-        (*val)--;
-        val = newVal;
+        (*modPtr)--;
       }
+
+      val = newVal;
     }
 
     foreach_reverse (op; preOps) {
       if (op == "-") {
         if (val.type == typeid(int)) {
-          val = new RTVal(-val.get!int);
+          val = RTVal(-val.get.get!int);
         }
         else if (val.type == typeid(float)) {
-          val = new RTVal(-val.get!float);
+          val = RTVal(-val.get.get!float);
         }
         else {
           runtimeError("With the - operator, the argument must be numeric", lineNum);
         }
       }
       else if (op == "!") {
-        if (val.toBool) val = new RTVal(false);
-        else            val = new RTVal(true);
+        if (val.toBool) val = RTVal(false);
+        else            val = RTVal(true);
       }
       else if (op == "++") {
-        ++*val;
+        if (!modPtr) {
+          runtimeError("Cannot " ~ op ~ " this value", lineNum);
+        }
+        ++*modPtr;
       }
       else if (op == "--") {
-        --*val;
+        if (!modPtr) {
+          runtimeError("Cannot " ~ op ~ " this value", lineNum);
+        }
+        --*modPtr;
       }
       else if (op == "~") {
         if (!val.convertsTo!int) {
           runtimeError("With the ~ operator, the argument must convert to an int", lineNum);
         }
 
-        val = new RTVal(cast(int) (~val.coerce!int));
+        val = RTVal(cast(int) (~val.coerce!int));
       }
       else if (op == "+") {
         if (!val.convertsTo!int) {
@@ -1745,11 +1808,16 @@ class Expression7 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    RTVal* result = exp8.interpret(context);
+  override InterpResult interpret(Context context) {
+    auto result = exp8.interpret(context);
 
     foreach (acc; accessors) {
-      result = acc.interpret(result, context);
+      RTVal* callingPtr = result.match!(
+        (RTVal* p) => p,
+        (RTVal  r) => new RTVal(r), //promote to GC-allocated value, as interpreting this value may cause it to outlive this function
+      );
+
+      result = acc.interpret(callingPtr, context);
     }
 
     return result;
@@ -1768,12 +1836,12 @@ class Expression8 : TreeNode {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     if (sub) return sub.interpret(context);
     else if (name.length) {
       auto val = context.getVar(name);
       if (val is null) runtimeError("No such variable called '" ~ name ~ "'", lineNum);
-      return val;
+      return InterpResult(val);
     }
     return literal.interpret(context);
   }
@@ -1789,8 +1857,8 @@ class SingleLiteral : Literal {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
-    return &rtVal;
+  override InterpResult interpret(Context context) {
+    return InterpResult(rtVal);
   }
 }
 
@@ -1823,14 +1891,14 @@ class ArrayLiteral : Literal {
     lineNum = ln;
   }
 
-  override RTVal* interpret(Context context) {
+  override InterpResult interpret(Context context) {
     RTVal[] rtVals = new RTVal[](exps.length);
 
     foreach (i, e; exps) {
-      rtVals[i] = *e.interpret(context);
+      rtVals[i] = e.interpret(context).get;
     }
 
-    return new RTVal(rtVals);
+    return InterpResult(RTVal(rtVals));
   }
 }
 
